@@ -429,6 +429,13 @@ def test_scan_progress_and_ui_safety_controls(tmp_path: Path, monkeypatch):
     assert "mailbox" in phases
     assert "done" in phases
 
+    catchup_events: list[dict] = []
+    run_scan(cfg, store, bridge, mode="catchup", on_progress=catchup_events.append)
+    cphases = [e["phase"] for e in catchup_events]
+    assert "accounts" in cphases
+    assert "mailbox" in cphases
+    assert "done" in cphases
+
     store.add_opened_tray_item(
         message_uid="iCloud:INBOX:10",
         account="iCloud",

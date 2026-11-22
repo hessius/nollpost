@@ -32,6 +32,7 @@
     actionsByUid: new Map(),
     confirmCallback: null,
     lastJobResults: [],
+    loadSeq: 0,
   };
 
   const qs = (id) => document.getElementById(id);
@@ -88,6 +89,7 @@
 
   function showError(msg) {
     const resEl = qs("results-banner");
+    resEl.dataset.kind = "error";
     resEl.classList.remove("hidden");
     const tip = isMailPermissionError(msg)
       ? `<div style="margin-top:4px;font-size:11px;color:var(--text-secondary);">Permission tip: Check <strong>System Settings → Privacy &amp; Security → Automation</strong> (enable Mail) and run <code>nollpost doctor</code>.</div>`
@@ -459,12 +461,14 @@
   }
 
   async function loadState(refresh = false) {
+    const seq = ++state.loadSeq;
     qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--text-secondary);" id="scan-status-text">Scanning Mail.app (${escapeHtml(state.mode)})…</div>`;
     let pollTimer = null;
-    if (refresh || !state.data) {
+    if (refresh || !state.data || state.data.mode !== state.mode) {
       pollTimer = setInterval(async () => {
         try {
           const st = await api("/api/scan/status");
+          if (seq !== state.loadSeq) return;
           const el = qs("scan-status-text");
           if (el && st.active && st.message) {
             el.textContent = st.message;
@@ -476,11 +480,20 @@
     }
     try {
       const data = await api(`/api/state?mode=${encodeURIComponent(state.mode)}&refresh=${refresh ? "true" : "false"}`);
+      if (seq !== state.loadSeq) return;
       state.data = data;
+      const resEl = qs("results-banner");
+      if (resEl.dataset.kind === "error") {
+        resEl.classList.add("hidden");
+        resEl.innerHTML = "";
+        delete resEl.dataset.kind;
+      }
       hydrateActionsFromData(data);
       render();
     } catch (err) {
-      qs("queue-container").innerHTML = renderRecoveryCard(err.message);
+      if (seq === state.loadSeq) {
+        qs("queue-container").innerHTML = renderRecoveryCard(err.message);
+      }
       throw err;
     } finally {
       if (pollTimer) clearInterval(pollTimer);
@@ -552,6 +565,7 @@
 
     qs("modal-title").textContent = `${title} (${preview.total_actions} actions)`;
     qs("modal-body").innerHTML = `<div class="confirm-grid">${statsGrid}</div>${detailsHtml}`;
+    qs("modal-confirm").disabled = false;
     qs("confirm-modal").classList.remove("hidden");
 
     state.confirmCallback = async () => {
@@ -602,6 +616,7 @@
     const resEl = qs("results-banner");
     state.lastJobResults = results || [];
     if (!results.length && !scanWarning) return;
+    resEl.dataset.kind = "results";
     resEl.classList.remove("hidden");
     const warnRow = scanWarning
       ? `<div class="result-row"><div><span class="pill warn">warning</span> ${escapeHtml(scanWarning)}</div></div>`
@@ -694,6 +709,7 @@
       <div class="preview-box"><strong>Archive Destinations:</strong> ${escapeHtml(destStr)}</div>
       <div class="preview-box">${itemRows}</div>
     `;
+    qs("modal-confirm").disabled = false;
     qs("confirm-modal").classList.remove("hidden");
     state.confirmCallback = async () => {
       qs("confirm-modal").classList.add("hidden");
@@ -767,16 +783,24 @@
         return;
       }
       if (t.dataset.trayDismissUid) {
-        await api("/api/tray/dismiss", {
-          method: "POST",
-          body: JSON.stringify({ uids: [t.dataset.trayDismissUid] }),
-        });
-        await loadState(false);
-        if ((state.data?.tray || []).length > 0) {
-          await openTrayConfirmation();
-        } else {
-          state.confirmCallback = null;
-          qs("confirm-modal").classList.add("hidden");
+        const uid = t.dataset.trayDismissUid;
+        if (t instanceof HTMLButtonElement) t.disabled = true;
+        qs("modal-confirm").disabled = true;
+        state.confirmCallback = null;
+        try {
+          await api("/api/tray/dismiss", {
+            method: "POST",
+            body: JSON.stringify({ uids: [uid] }),
+          });
+          await loadState(false);
+          if ((state.data?.tray || []).length > 0) {
+            await openTrayConfirmation();
+          } else {
+            qs("confirm-modal").classList.add("hidden");
+          }
+        } finally {
+          if (t instanceof HTMLButtonElement) t.disabled = false;
+          qs("modal-confirm").disabled = false;
         }
         return;
       }
@@ -981,6 +1005,7 @@
         Dismissing the Safety Tray clears <strong>${tray.length}</strong> opened item(s) from this reminder tray only. Your emails will remain untouched in Mail.app Inbox.
       </div>
     `;
+    qs("modal-confirm").disabled = false;
     qs("confirm-modal").classList.remove("hidden");
     state.confirmCallback = async () => {
       qs("confirm-modal").classList.add("hidden");
