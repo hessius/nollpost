@@ -603,20 +603,57 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
     }
 
+    private func resolvedConfigPath() -> String {
+        let env = ProcessInfo.processInfo.environment
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        if let raw = env["NOLLPOST_CONFIG"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            return (raw as NSString).expandingTildeInPath
+        }
+        let nollpostCfg = "\(home)/.config/nollpost/config.toml"
+        if fm.fileExists(atPath: nollpostCfg) {
+            return nollpostCfg
+        }
+        if let rawLegacy = env["MAIL_TRIAGE_CONFIG"]?.trimmingCharacters(in: .whitespacesAndNewlines), !rawLegacy.isEmpty {
+            return (rawLegacy as NSString).expandingTildeInPath
+        }
+        let legacyCfg = "\(home)/.config/mail-triage/config.toml"
+        if fm.fileExists(atPath: legacyCfg) {
+            return legacyCfg
+        }
+        return nollpostCfg
+    }
+
     private func isUpdateCheckDisabledByUser() -> Bool {
         let env = ProcessInfo.processInfo.environment
         if let flag = env["NOLLPOST_NO_UPDATE_CHECK"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
            ["1", "true", "yes"].contains(flag) {
             return true
         }
-        let cfgPath = env["NOLLPOST_CONFIG"] ??
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/nollpost/config.toml").path
-        guard let text = try? String(contentsOfFile: cfgPath, encoding: .utf8) else {
+        guard let text = try? String(contentsOfFile: resolvedConfigPath(), encoding: .utf8) else {
             return false
         }
-        for line in text.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("check_updates") && trimmed.contains("false") {
+        var currentSection = ""
+        var inMultiline = false
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.contains("\"\"\"") {
+                let parts = trimmed.components(separatedBy: "\"\"\"").count - 1
+                if parts % 2 == 1 { inMultiline.toggle() }
+                continue
+            }
+            if inMultiline || trimmed.isEmpty || trimmed.hasPrefix("#") {
+                continue
+            }
+            if trimmed.hasPrefix("["), let closeIdx = trimmed.firstIndex(of: "]") {
+                currentSection = String(trimmed[trimmed.index(after: trimmed.startIndex)..<closeIdx])
+                    .trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            guard currentSection == "user" else { continue }
+            let uncommented = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                .trimmingCharacters(in: .whitespaces)
+            if uncommented.range(of: #"^check_updates\s*=\s*false\b"#, options: .regularExpression) != nil {
                 return true
             }
         }
@@ -639,15 +676,22 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    private nonisolated static func isNewerVersion(_ latest: String, current: String) -> Bool {
-        let parse: (String) -> [Int] = { raw in
-            raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                .split(separator: ".")
-                .compactMap { Int($0) }
+    private nonisolated static func parseVersionParts(_ raw: String) -> [Int] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let regex = try? NSRegularExpression(pattern: #"^[vV]?(\d+(?:\.\d+)*)"#),
+            let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+            match.numberOfRanges > 1,
+            let range = Range(match.range(at: 1), in: trimmed)
+        else {
+            return []
         }
-        let l = parse(latest)
-        let c = parse(current)
+        return trimmed[range].split(separator: ".").compactMap { Int($0) }
+    }
+
+    private nonisolated static func isNewerVersion(_ latest: String, current: String) -> Bool {
+        let l = parseVersionParts(latest)
+        let c = parseVersionParts(current)
         guard !l.isEmpty && !c.isEmpty else { return false }
         let count = max(l.count, c.count)
         for idx in 0..<count {
@@ -660,18 +704,35 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
 
     private func checkForUpdates(interactive: Bool) {
         let env = ProcessInfo.processInfo.environment
-        let targetRaw = env["NOLLPOST_UPDATE_URL"] ?? Self.tapFormulaURLString
-        guard let url = URL(string: targetRaw) else { return }
+        let targetRaw = (env["NOLLPOST_UPDATE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? Self.tapFormulaURLString
+        guard let url = URL(string: targetRaw) else {
+            if interactive {
+                showAlert(style: .warning, title: "Update Check Failed", message: "Invalid update URL: \(targetRaw)")
+            }
+            return
+        }
         let current = installedBundleVersion()
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 3.0
+        cfg.timeoutIntervalForResource = 5.0
+        let session = URLSession(configuration: cfg)
 
         var req = URLRequest(url: url)
         req.timeoutInterval = 3.0
         req.setValue("nollpost-menubar/\(current)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: req) { [weak self] data, _, error in
-            let parsedVersion = data
-                .map { String(decoding: $0, as: UTF8.self) }
-                .flatMap { Self.parseFormulaVersion($0) }
-            let errText = error?.localizedDescription
+        session.dataTask(with: req) { [weak self] data, response, error in
+            session.finishTasksAndInvalidate()
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let isHttpOk = (200..<300).contains(statusCode)
+            let parsedVersion = isHttpOk
+                ? data.map { String(decoding: $0, as: UTF8.self) }.flatMap { Self.parseFormulaVersion($0) }
+                : nil
+            let errText: String? = error?.localizedDescription ?? (!isHttpOk
+                ? "HTTP \(statusCode) from tap formula"
+                : (parsedVersion == nil ? "Could not parse version from Homebrew formula" : nil))
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let latest = parsedVersion, Self.isNewerVersion(latest, current: current) {
@@ -685,7 +746,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
                     self.latestAvailableVersion = nil
                     self.updateNoticeMenuItem?.isHidden = true
                     if interactive {
-                        if let errText, parsedVersion == nil {
+                        if let errText {
                             self.showAlert(style: .warning, title: "Update Check Failed", message: errText)
                         } else {
                             self.showAlert(

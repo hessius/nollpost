@@ -1439,9 +1439,13 @@
       }
       if (target.id === "btn-copy-upgrade-cmd" && target.dataset.upgradeCmd) {
         const cmd = target.dataset.upgradeCmd;
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(cmd);
-          target.textContent = t("update.copied");
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(cmd);
+            target.textContent = t("update.copied");
+          }
+        } catch (_clipErr) {
+          // Clipboard permission denied; command remains visible in the banner
         }
         return;
       }

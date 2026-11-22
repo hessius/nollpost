@@ -1,6 +1,6 @@
 # macOS Distribution & Homebrew Tap Automation
 
-Nollpost is distributed for macOS via **Homebrew** ([`Hessius/homebrew-tap`](https://github.com/Hessius/homebrew-tap)) — supporting both Apple Silicon (`arm64`) and Intel (`x86_64`) Macs — alongside `uv tool` / `pipx` for CLI users. There is no standalone prepackaged `.dmg` or `.zip` bundle.
+Nollpost is distributed for macOS via **Homebrew** ([`Hessius/homebrew-tap`](https://github.com/Hessius/homebrew-tap)), supporting both Apple Silicon (`arm64`) and Intel (`x86_64`) Macs, alongside `uv tool` / `pipx` for CLI users. There is no standalone prepackaged `.dmg` or `.zip` bundle.
 
 When installed via Homebrew ([`Formula/nollpost.rb`](../Formula/nollpost.rb)):
 1. An isolated Python 3.13 virtualenv is created in `libexec`.
