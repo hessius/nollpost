@@ -901,7 +901,7 @@
     const c = cfg.consulting || {};
     const p = cfg.profile || {};
 
-    const stratOpts = (a.valid_gmail_strategies || ["ui_menu", "two_hop", "tag_staging"])
+    const stratOpts = (a.valid_gmail_strategies || ["background", "ui_menu", "two_hop", "tag_staging"])
       .map((s) => {
         const key = `settings.gmail_strategy_${s}`;
         const label = Object.prototype.hasOwnProperty.call(state.messages || {}, key) ? t(key) : s;
@@ -1348,7 +1348,7 @@
               })(),
             },
             accounts: {
-              gmail_archive_strategy: qs("cfg-gmail-strategy")?.value || "ui_menu",
+              gmail_archive_strategy: qs("cfg-gmail-strategy")?.value || "background",
               archive_map: parseArchiveMapLines(qs("cfg-archive-map")?.value || ""),
             },
             rules: {

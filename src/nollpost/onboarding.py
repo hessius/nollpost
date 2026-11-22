@@ -192,7 +192,7 @@ def run_doctor(
                     "accessibility",
                     "warn",
                     f"{ax_detail} (needed for gmail_archive_strategy = \"ui_menu\")",
-                    "Enable Accessibility for your terminal app in System Settings → Privacy & Security → Accessibility, or switch gmail_archive_strategy to \"tag_staging\" or \"two_hop\".",
+                    "Enable Accessibility for your terminal app in System Settings → Privacy & Security → Accessibility, or switch gmail_archive_strategy to \"background\" (default), \"tag_staging\", or \"two_hop\".",
                 )
             )
 
@@ -326,17 +326,18 @@ def run_setup(
         has_gmail = any(is_gmail_all_mail_destination(box) for box in archive_map.values()) or any(
             is_gmail_all_mail_destination(a.archive_mailbox) for a in accounts
         )
-        current_strategy = str(merged["accounts"].get("gmail_archive_strategy", "ui_menu")).strip().lower()
+        current_strategy = str(merged["accounts"].get("gmail_archive_strategy", "background")).strip().lower()
         if current_strategy not in VALID_GMAIL_ARCHIVE_STRATEGIES:
-            current_strategy = "ui_menu"
+            current_strategy = "background"
             merged["accounts"]["gmail_archive_strategy"] = current_strategy
         if has_gmail and not yes:
             output_fn("\nGmail archive strategy:")
-            output_fn("  1) ui_menu     : Clicks Mail.app's Archive menu item (safe default; needs Accessibility)")
-            output_fn("  2) two_hop     : Stages via _ArchiveTmp and moves to All Mail")
-            output_fn("  3) tag_staging : Tags _ArchiveTmp for a Google Apps Script trigger (fastest headless)")
-            choice = input_fn(f"Choose Gmail strategy (1-3 or name) [{current_strategy}]: ").strip().lower()
-            mapping = {"1": "ui_menu", "2": "two_hop", "3": "tag_staging"}
+            output_fn("  1) ui_menu     : Clicks Mail.app's Archive toolbar/menu action (needs Accessibility)")
+            output_fn("  2) two_hop     : Legacy stages via _ArchiveTmp and moves to All Mail")
+            output_fn("  3) tag_staging : Tags _ArchiveTmp for a Google Apps Script trigger")
+            output_fn("  4) background  : Silent headless Archive via Gmail Trash -> All Mail (recommended default)")
+            choice = input_fn(f"Choose Gmail strategy (1-4 or name) [{current_strategy}]: ").strip().lower()
+            mapping = {"1": "ui_menu", "2": "two_hop", "3": "tag_staging", "4": "background"}
             chosen_strategy = mapping.get(choice, choice or current_strategy)
             if chosen_strategy not in VALID_GMAIL_ARCHIVE_STRATEGIES:
                 output_fn(f"Unknown strategy '{chosen_strategy}', keeping '{current_strategy}'.")

@@ -189,6 +189,7 @@
   "settings.catchup_limit": "Max antal arkivmejl (1-5000)",
   "settings.catchup_days": "Arkivdagar bakåt (1-365)",
   "settings.gmail_strategy": "Arkivstrategi för Gmail",
+  "settings.gmail_strategy_background": "background (Tyst bakgrundsarkiv via Papperskorg -> All e-post)",
   "settings.gmail_strategy_ui_menu": "ui_menu (Inbyggd Arkivera i Apple Mail)",
   "settings.gmail_strategy_two_hop": "two_hop (Mellanlagra via _ArchiveTmp -> All e-post)",
   "settings.gmail_strategy_tag_staging": "tag_staging (_ArchiveTmp + Apps Script)",

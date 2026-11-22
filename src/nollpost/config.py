@@ -29,7 +29,7 @@ def _normalize_ui_language(raw: str, *, strict: bool = False) -> str:
         return f"{primary.lower()}-{region}"
     return lang.lower()
 
-VALID_GMAIL_ARCHIVE_STRATEGIES = ("ui_menu", "tag_staging", "two_hop")
+VALID_GMAIL_ARCHIVE_STRATEGIES = ("background", "ui_menu", "tag_staging", "two_hop")
 
 DEFAULT_CONFIG_TOML = """# nollpost configuration
 
@@ -46,10 +46,11 @@ catchup_days_back = 14
 
 [accounts]
 # Strategy for archiving Gmail messages via Apple Mail:
-# - "ui_menu"     : Clicks Mail.app's Archive menu item (safe default; requires Accessibility permission)
-# - "two_hop"     : Stages via _ArchiveTmp and moves to All Mail
+# - "background"  : Silent headless two-hop via Gmail Trash -> All Mail to strip \\Inbox (default; no focus steal)
+# - "ui_menu"     : Clicks Mail.app's Archive toolbar/menu action (requires Accessibility permission)
+# - "two_hop"     : Legacy stages via _ArchiveTmp and moves to All Mail
 # - "tag_staging" : Tags _ArchiveTmp for a user-installed Google Apps Script trigger (see README.md)
-gmail_archive_strategy = "ui_menu"
+gmail_archive_strategy = "background"
 
 [accounts.archive_map]
 # Optional per-account archive overrides (auto-detected by default; never Trash/Deleted).
@@ -125,7 +126,7 @@ class TriageConfig:
     catchup_days_back: int = 14
     consulting_enabled: bool = False
     consulting_decline_boilerplate: str = ""
-    gmail_archive_strategy: str = "ui_menu"
+    gmail_archive_strategy: str = "background"
     browser_locale: str = "en-US"
     accept_language: str = "en-US,en;q=0.9"
     patterns_path: Optional[Path] = None
@@ -272,7 +273,7 @@ def load_config(
         candidate = resolved_config_path.parent / "unsub_patterns.toml"
         patterns_path = candidate if candidate.exists() else None
 
-    gmail_strategy = str(acct_sec.get("gmail_archive_strategy", "ui_menu")).strip().lower()
+    gmail_strategy = str(acct_sec.get("gmail_archive_strategy", "background")).strip().lower()
     if gmail_strategy not in VALID_GMAIL_ARCHIVE_STRATEGIES:
         raise ValueError(
             f"Invalid gmail_archive_strategy {gmail_strategy!r}; "
@@ -392,7 +393,7 @@ def render_config_toml(data: dict[str, Any]) -> str:
         f"catchup_days_back = {int(user.get('catchup_days_back', 14))}",
         "",
         "[accounts]",
-        f"gmail_archive_strategy = {toml_str(str(accounts.get('gmail_archive_strategy', 'ui_menu')))}",
+        f"gmail_archive_strategy = {toml_str(str(accounts.get('gmail_archive_strategy', 'background')))}",
         "",
         "[accounts.archive_map]",
     ]
