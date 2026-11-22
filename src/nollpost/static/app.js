@@ -27,6 +27,7 @@
     auditItems: [],
     auditRuns: [],
     auditSeq: 0,
+    updateInfo: null,
   };
 
   const qs = (id) => document.getElementById(id);
@@ -102,7 +103,54 @@
     state.messages = payload.messages || {};
     state.availableLocales = payload.available || [];
     translateStaticDom();
+    renderUpdateBanner();
     if (state.data) render();
+  }
+
+  function renderUpdateBanner() {
+    const el = qs("update-banner");
+    if (!el) return;
+    const info = state.updateInfo;
+    if (!info || !info.update_available || !info.latest_version) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    try {
+      if (window.localStorage && window.localStorage.getItem("nollpost_dismissed_update") === String(info.latest_version)) {
+        el.classList.add("hidden");
+        el.innerHTML = "";
+        return;
+      }
+    } catch (_ignored) {
+      // Ignore storage access restriction
+    }
+    const relLink = isSafeHttpUrl(info.release_url)
+      ? `<a class="btn small secondary" href="${escapeHtml(info.release_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t("update.release_notes"))}</a>`
+      : "";
+    el.innerHTML = `
+      <div>${tHtml("update.banner", {
+        latest: info.latest_version,
+        current: info.current_version || "",
+        cmd: info.upgrade_command || "brew upgrade hessius/tap/nollpost",
+      })}</div>
+      <div class="update-banner-actions">
+        <button type="button" class="btn small primary" id="btn-copy-upgrade-cmd" data-upgrade-cmd="${escapeHtml(info.upgrade_command || "brew upgrade hessius/tap/nollpost")}">${escapeHtml(t("update.copy_cmd"))}</button>
+        ${relLink}
+        <button type="button" class="btn small secondary" id="btn-dismiss-update" data-dismiss-ver="${escapeHtml(info.latest_version)}">${escapeHtml(t("update.dismiss"))}</button>
+      </div>
+    `;
+    el.classList.remove("hidden");
+  }
+
+  async function checkForUpdates(refresh = false) {
+    try {
+      const info = await api(`/api/updates?refresh=${refresh ? "true" : "false"}`);
+      state.updateInfo = info;
+      renderUpdateBanner();
+    } catch (_ignored) {
+      // Offline or blocked update check never disturbs triage workflow
+    }
   }
 
   function accountToneClass(name) {
@@ -914,6 +962,10 @@
             <input type="checkbox" id="cfg-mark-read" ${u.mark_read_on_archive !== false ? "checked" : ""} />
             <span>${escapeHtml(t("settings.mark_read"))}</span>
           </label>
+          <label class="toggle-check" style="margin-top:6px;">
+            <input type="checkbox" id="cfg-check-updates" ${u.check_updates !== false ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.check_updates"))}</span>
+          </label>
         </div>
         <div class="settings-field" style="margin-top:8px;">
           <label for="cfg-archive-map">${t("settings.archive_map")}</label>
@@ -1277,6 +1329,7 @@
           const payload = {
             user: {
               ui_language: (qs("cfg-ui-language")?.value || "").trim(),
+              check_updates: Boolean(qs("cfg-check-updates")?.checked),
               mark_read_on_archive: Boolean(qs("cfg-mark-read")?.checked),
               max_inbox_messages: Number(qs("cfg-max-inbox")?.value || 500),
               catchup_scan_limit: Number(qs("cfg-catchup-limit")?.value || 200),
@@ -1308,6 +1361,7 @@
           };
           await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
           await loadI18n();
+          checkForUpdates(false);
           state.actionsByUid.clear();
           qs("snapshot-modal").classList.add("hidden");
           await loadState(true);
@@ -1381,6 +1435,25 @@
             showError(scanErr.message);
           }
         };
+        return;
+      }
+      if (target.id === "btn-copy-upgrade-cmd" && target.dataset.upgradeCmd) {
+        const cmd = target.dataset.upgradeCmd;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(cmd);
+          target.textContent = t("update.copied");
+        }
+        return;
+      }
+      if (target.id === "btn-dismiss-update" && target.dataset.dismissVer) {
+        try {
+          if (window.localStorage) {
+            window.localStorage.setItem("nollpost_dismissed_update", target.dataset.dismissVer);
+          }
+        } catch (_ignored) {
+          // Ignore storage errors
+        }
+        renderUpdateBanner();
         return;
       }
       if (target.id === "btn-rules-bulk-apply") {
@@ -1774,6 +1847,7 @@
     } catch (_i18nErr) {
       // Fall back to static English DOM strings if locale fetch fails
     }
+    checkForUpdates(false);
     await loadState(false);
   })().catch((err) => {
     showError(err.message);

@@ -192,6 +192,7 @@
   "settings.ui_language": "Språk i gränssnittet",
   "settings.ui_language_auto": "Auto (Webbläsare / OS)",
   "settings.mark_read": "Markera mejl som lästa vid arkivering",
+  "settings.check_updates": "Sök efter nya versioner av Nollpost via Homebrew",
   "settings.archive_map": "Arkivmappar per konto (en <code>Konto = Mapp</code> per rad; Papperskorg/Skräp blockeras)",
   "settings.section_rules": "Domäner, nyckelord & regelpaket",
   "settings.no_packs": "Inga inbyggda regelpaket hittades",
@@ -257,5 +258,10 @@
   "audit.confirm_body_generic": "Återställ arkiverat meddelande tillbaka till <strong>INBOX</strong>?",
   "audit.restored_ok": "Återställd till {dest}.",
   "audit.undo_failed": "Återställning misslyckades: {message}",
-  "audit.run_prefix": "Körning {id}"
+  "audit.run_prefix": "Körning {id}",
+  "update.banner": "<strong>Uppdatering tillgänglig:</strong> Nollpost v{latest} (installerad: v{current}). Kör <code>{cmd}</code>",
+  "update.copy_cmd": "Kopiera kommando",
+  "update.copied": "Kopierat",
+  "update.release_notes": "Versionsinfo",
+  "update.dismiss": "Dölj"
 }

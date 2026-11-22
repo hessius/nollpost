@@ -1,4 +1,4 @@
-name: Release macOS App & Homebrew Formula
+name: Release to Homebrew Tap
 
 on:
   push:
@@ -11,12 +11,12 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-macos-app:
-    name: Build Universal Nollpost.app
-    runs-on: macos-latest
+  publish-homebrew:
+    name: Update Homebrew Tap Formula
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,16 +39,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build & sign Nollpost.app (ad-hoc unless Developer ID identity is provided)
-        run: |
-          python3 scripts/build_macos_app.py \
-            --arch universal \
-            --version "${{ steps.meta.outputs.version }}" \
-            --output dist
-
       - name: Fetch GitHub tag tarball SHA256 and render Formula/nollpost.rb
         run: |
           TAG="${{ steps.meta.outputs.tag }}"
+          mkdir -p dist
           TARBALL="dist/nollpost-${TAG}.tar.gz"
           URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
           curl -fsSL "$URL" -o "$TARBALL"
@@ -57,11 +51,41 @@ jobs:
             --tarball "$TARBALL" \
             --url "$URL" \
             --output dist/nollpost.rb
+          ruby -c dist/nollpost.rb
 
-      - name: Upload release artifacts
+      - name: Ensure GitHub Release exists for tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --generate-notes --title "$TAG"
+          fi
+
+      - name: Push updated Formula/nollpost.rb to Hessius/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN secret is not configured; skipping automatic push to Hessius/homebrew-tap. Download nollpost.rb from workflow artifacts and push manually."
+            exit 0
+          fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/Hessius/homebrew-tap.git" tap-repo
+          cp dist/nollpost.rb tap-repo/Formula/nollpost.rb
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet Formula/nollpost.rb; then
+            echo "Hessius/homebrew-tap Formula/nollpost.rb is already up to date for ${TAG}."
+            exit 0
+          fi
+          git add Formula/nollpost.rb
+          git commit -m "chore(nollpost): release ${TAG}"
+          git push origin main
+
+      - name: Upload rendered formula artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nollpost-macos-dist
-          path: |
-            dist/Nollpost-*-macOS.zip
-            dist/nollpost.rb
+          name: homebrew-formula-${{ steps.meta.outputs.tag }}
+          path: dist/nollpost.rb

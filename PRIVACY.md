@@ -13,7 +13,8 @@ Nollpost is designed to run **100% locally** on your Mac with strict guardrails 
 - Every batch execution requires explicit approval in the **Confirmation Preview** modal (`0 deleted`).
 
 ## 3. Outbound Network & SSRF Safeguards
-- Nollpost only makes outbound HTTP requests when you confirm an unsubscribe or decline action.
+- Nollpost only makes outbound HTTP requests when you confirm an unsubscribe or decline action, or (unless disabled) performs a lightweight read-only check (`GET` to the public Homebrew tap formula with a 6-hour local cache) for new Nollpost versions.
+- Update checks send zero user, inbox, or telemetry data and can be disabled via `check_updates = false` in `config.toml` (or **Settings**) or `NOLLPOST_NO_UPDATE_CHECK=1`.
 - `is_public_http_url()` validates target URLs (and every HTTP redirect / Playwright route) to block `localhost`, `.local`/`.internal` hostnames, private/loopback/link-local IPv4/IPv6 ranges, and obfuscated IP literals.
 - **CAPTCHA / Bot Challenges:** Nollpost never solves or bypasses CAPTCHAs (`reCAPTCHA`, `hCaptcha`, `Turnstile`). If one appears, automation stops immediately (`blocked_captcha`) and surfaces the URL for manual completion.
 

@@ -40,7 +40,7 @@ brew install hessius/tap/nollpost
 open "$(brew --prefix nollpost)/Nollpost.app"
 ```
 
-See [docs/macos-distribution.md](docs/macos-distribution.md) for signing, notarization, and release-tap details.
+See [docs/macos-distribution.md](docs/macos-distribution.md) for Homebrew tap release automation and update-check details.
 
 ### `uv` or `pipx`
 

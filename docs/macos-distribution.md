@@ -1,20 +1,15 @@
-# macOS Distribution, Homebrew Tap, and Code Signing Guide
+# macOS Distribution & Homebrew Tap Automation
 
-Nollpost provides two macOS distribution paths beyond `uv tool` / `pipx`:
+Nollpost is distributed for macOS via **Homebrew** ([`Hessius/homebrew-tap`](https://github.com/Hessius/homebrew-tap)) — supporting both Apple Silicon (`arm64`) and Intel (`x86_64`) Macs — alongside `uv tool` / `pipx` for CLI users. There is no standalone prepackaged `.dmg` or `.zip` bundle.
 
-1. **Homebrew Formula ([`Formula/nollpost.rb`](../Formula/nollpost.rb))** covering both Apple Silicon (`arm64`) and Intel (`x86_64`) Macs:
-   - Creates an isolated Python 3.13 virtualenv in `libexec`.
-   - Installs Playwright Chromium into `$(brew --prefix)/var/nollpost/ms-playwright` during `post_install` and wraps `bin/nollpost` with `PLAYWRIGHT_BROWSERS_PATH`.
-   - Compiles the lightweight Swift/AppKit menu-bar launcher (`Nollpost.app`) against Cocoa & ApplicationServices and embeds `Info.plist` + AppleEvents entitlements.
-2. **Menu-Bar Wrapper App (`Nollpost.app`)** built via [`scripts/build_macos_app.py`](../scripts/build_macos_app.py):
-   - Compiles a thin Swift/AppKit Universal binary (`arm64` + `x86_64` via `lipo`). It does **not** bundle Python or Playwright Chromium by itself; it locates and runs an existing `nollpost` CLI installation (installed via Homebrew, `uv tool`, or `pipx`).
-   - Starts `nollpost serve --no-open`, waits for loopback readiness, opens the authenticated Review Board in your browser, runs `nollpost doctor`, and surfaces macOS **Automation** (`AEDeterminePermissionToAutomateTarget`) and **Accessibility** (`AXIsProcessTrustedWithOptions`) prompts cleanly.
+When installed via Homebrew ([`Formula/nollpost.rb`](../Formula/nollpost.rb)):
+1. An isolated Python 3.13 virtualenv is created in `libexec`.
+2. Playwright Chromium is installed cleanly into `$(brew --prefix)/var/nollpost/ms-playwright` via `post_install_steps`, and `bin/nollpost` sets `PLAYWRIGHT_BROWSERS_PATH` automatically.
+3. The lightweight Swift/AppKit menu-bar launcher (`Nollpost.app`) is compiled natively for the Mac's CPU architecture, ad-hoc signed locally with `com.apple.security.automation.apple-events` entitlements (no Developer ID certificate needed), and installed in `$(brew --prefix nollpost)/Nollpost.app`.
 
 ---
 
-## Updating `Hessius/homebrew-tap` on New Releases
-
-[`Hessius/homebrew-tap`](https://github.com/Hessius/homebrew-tap) hosts `Formula/nollpost.rb`:
+## Installing & Upgrading via Homebrew
 
 ```bash
 brew tap hessius/tap
@@ -22,45 +17,33 @@ brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
 ```
 
-When releasing a new version:
+To launch the optional menu-bar wrapper:
 
-1. Tag a release in `Hessius/nollpost` (for example `v0.1.0`):
-   ```bash
-   git tag -a v0.1.0 -m "v0.1.0"
-   git push origin v0.1.0
-   ```
-2. Run [`scripts/update_homebrew_formula.py`](../scripts/update_homebrew_formula.py) against the GitHub release tarball (or copy the `nollpost.rb` artifact produced by `.github/workflows/release-homebrew.yml`) into `Hessius/homebrew-tap/Formula/nollpost.rb`:
-   ```bash
-   SHA=$(curl -fsSL https://github.com/Hessius/nollpost/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256 | awk '{print $1}')
-   python3 scripts/update_homebrew_formula.py --version 0.1.0 --sha256 "$SHA"
-   ```
+```bash
+open "$(brew --prefix nollpost)/Nollpost.app"
+```
+
+Both the **Review Board** web UI and the **`Nollpost.app` menu-bar launcher** check `Hessius/homebrew-tap` (6-hour cache, zero user/inbox telemetry; disable via `check_updates = false` in `config.toml`, **Settings**, or `NOLLPOST_NO_UPDATE_CHECK=1`) and surface a notice when a newer release is available:
+
+```bash
+brew upgrade hessius/tap/nollpost
+```
 
 ---
 
-## Building, Signing, and Notarizing `Nollpost.app`
+## Automating Releases to `Hessius/homebrew-tap`
 
-Building locally (ad-hoc signed for local testing on the current machine):
+Pushing any `v*` tag (after bumping `version` in `pyproject.toml`, `src/nollpost/__init__.py`, and `macos/NollpostMenuBar/Info.plist`) triggers [`.github/workflows/release-homebrew.yml`](../.github/workflows/release-homebrew.yml):
 
-```bash
-python3 scripts/build_macos_app.py --arch universal --output dist
-```
+1. Computes the SHA256 of GitHub's `archive/refs/tags/v<version>.tar.gz` tarball and renders `Formula/nollpost.rb` with [`scripts/update_homebrew_formula.py`](../scripts/update_homebrew_formula.py).
+2. Creates a GitHub Release with generated release notes if one does not already exist for the tag.
+3. Automatically commits and pushes the updated `Formula/nollpost.rb` to `Hessius/homebrew-tap` when the `HOMEBREW_TAP_TOKEN` repository secret is configured.
 
-Building with an Apple **Developer ID Application** certificate and notarization credentials (required for Gatekeeper trust across external Macs):
-
-1. Store your App Store Connect / Notary API credentials in Keychain once:
+### One-Time Setup for `HOMEBREW_TAP_TOKEN`
+1. Create a GitHub fine-grained Personal Access Token scoped strictly to `Hessius/homebrew-tap` with **Contents: Read and write** permission.
+2. Add it as a repository secret named `HOMEBREW_TAP_TOKEN` in **Hessius/nollpost → Settings → Secrets and variables → Actions**.
+3. Release a new version with:
    ```bash
-   xcrun notarytool store-credentials "nollpost-notary" \
-     --apple-id "<APPLE_ID_EMAIL>" \
-     --team-id "<TEAM_ID>" \
-     --password "<APP_SPECIFIC_PASSWORD>"
+   git tag -a v0.2.0 -m "v0.2.0"
+   git push origin v0.2.0
    ```
-2. Build, sign with Hardened Runtime (`com.apple.security.automation.apple-events`), submit for notarization, staple the ticket, and archive `dist/Nollpost-<version>-macOS.zip`:
-   ```bash
-   python3 scripts/build_macos_app.py \
-     --arch universal \
-     --identity "Developer ID Application: <Your Name> (<TEAM_ID>)" \
-     --notarize-profile "nollpost-notary" \
-     --output dist
-   ```
-
-> **Note:** An `Apple Development` certificate can sign for local testing, whereas public distribution outside Developer Macs requires a `Developer ID Application` certificate plus `notarytool` notarization.

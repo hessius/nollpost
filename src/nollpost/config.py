@@ -37,6 +37,7 @@ DEFAULT_CONFIG_TOML = """# nollpost configuration
 display_name = ""
 # Review Board UI language: "" (auto from browser/OS), "en", or "sv"
 ui_language = ""
+check_updates = true
 mark_read_on_archive = true
 max_inbox_messages = 500
 catchup_scan_limit = 200
@@ -115,6 +116,7 @@ class TriageConfig:
     screenshots_dir: Path
     display_name: str = ""
     ui_language: str = ""
+    check_updates: bool = True
     mark_read_on_archive: bool = True
     max_inbox_messages: int = 500
     catchup_scan_limit: int = 200
@@ -310,6 +312,7 @@ def load_config(
         screenshots_dir=screenshots_dir,
         display_name=str(user_sec["display_name"]),
         ui_language=ui_language,
+        check_updates=bool(user_sec.get("check_updates", True)),
         mark_read_on_archive=bool(user_sec["mark_read_on_archive"]),
         max_inbox_messages=int(user_sec["max_inbox_messages"]),
         catchup_scan_limit=int(user_sec["catchup_scan_limit"]),
@@ -378,6 +381,7 @@ def render_config_toml(data: dict[str, Any]) -> str:
         "[user]",
         f"display_name = {toml_str(str(user.get('display_name', '')))}",
         f"ui_language = {toml_str(str(user.get('ui_language', '')))}",
+        f"check_updates = {'true' if user.get('check_updates', True) else 'false'}",
         f"mark_read_on_archive = {'true' if user.get('mark_read_on_archive', True) else 'false'}",
         f"max_inbox_messages = {int(user.get('max_inbox_messages', 500))}",
         f"catchup_scan_limit = {int(user.get('catchup_scan_limit', 200))}",
@@ -479,6 +483,8 @@ def update_config_file(
             merged["user"]["display_name"] = str(u["display_name"]).strip()
         if "ui_language" in u:
             merged["user"]["ui_language"] = _normalize_ui_language(str(u["ui_language"]), strict=True)
+        if "check_updates" in u:
+            merged["user"]["check_updates"] = bool(u["check_updates"])
         if "mark_read_on_archive" in u:
             merged["user"]["mark_read_on_archive"] = bool(u["mark_read_on_archive"])
         if "max_inbox_messages" in u:

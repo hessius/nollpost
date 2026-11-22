@@ -192,6 +192,7 @@
   "settings.ui_language": "Review Board Language",
   "settings.ui_language_auto": "Auto (Browser / OS)",
   "settings.mark_read": "Mark messages as read when archiving",
+  "settings.check_updates": "Check for new Nollpost releases via Homebrew tap",
   "settings.archive_map": "Per-Account Archive Overrides (one <code>Account = Mailbox</code> per line; Trash/Junk blocked)",
   "settings.section_rules": "Domains, Keywords & Rule Packs",
   "settings.no_packs": "No built-in packs found",
@@ -257,5 +258,10 @@
   "audit.confirm_body_generic": "Restore archived message back to <strong>INBOX</strong>?",
   "audit.restored_ok": "Restored to {dest}.",
   "audit.undo_failed": "Undo failed: {message}",
-  "audit.run_prefix": "Run {id}"
+  "audit.run_prefix": "Run {id}",
+  "update.banner": "<strong>Update available:</strong> Nollpost v{latest} (installed: v{current}). Run <code>{cmd}</code>",
+  "update.copy_cmd": "Copy upgrade command",
+  "update.copied": "Copied",
+  "update.release_notes": "Release Notes",
+  "update.dismiss": "Dismiss"
 }
