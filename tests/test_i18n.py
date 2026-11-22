@@ -197,6 +197,13 @@ def test_i18n_api_resolution_config_and_fallback(tmp_path: Path, monkeypatch):
         assert forced.json()["language"] == "sv"
         assert "ui_language = \"sv\"" in (tmp_path / "config.toml").read_text(encoding="utf-8")
 
+        auto_override = client.get(
+            "/api/i18n?lang=auto",
+            headers={"X-Triage-Key": token, "Accept-Language": "en-US,en;q=0.9"},
+        )
+        assert auto_override.status_code == 200
+        assert auto_override.json()["language"] == "en"
+
     # Partial locale falls back cleanly to English on missing keys
     partial_dir = tmp_path / "locales"
     partial_dir.mkdir()

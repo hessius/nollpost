@@ -102,6 +102,7 @@
     state.messages = payload.messages || {};
     state.availableLocales = payload.available || [];
     translateStaticDom();
+    if (state.data) render();
   }
 
   function accountToneClass(name) {
@@ -938,7 +939,7 @@
           </div>
           <div class="settings-field">
             <label for="cfg-browser-locale">${escapeHtml(t("settings.browser_locale", { effective: b.effective_locale || "en-US" }))}</label>
-            <input id="cfg-browser-locale" type="text" value="${escapeHtml(b.locale || "")}" placeholder="e.g. sv-SE or en-US" />
+            <input id="cfg-browser-locale" type="text" value="${escapeHtml(b.locale || "")}" placeholder="${escapeHtml(t("settings.browser_locale_placeholder"))}" />
             <label for="cfg-accept-lang" style="margin-top:4px;">${escapeHtml(t("settings.accept_lang"))}</label>
             <input id="cfg-accept-lang" type="text" value="${escapeHtml(b.accept_language || "")}" placeholder="${escapeHtml(b.effective_accept_language || "en-US,en;q=0.9")}" />
           </div>
@@ -1552,8 +1553,8 @@
         });
         r.status = "ok";
         r.detail = resp.archived
-          ? "Marked unsubscribed & archived by user"
-          : "Marked unsubscribed by user";
+          ? t("results.marked_unsub_archived")
+          : t("results.marked_unsub");
         qs("snapshot-modal").classList.add("hidden");
         renderJobResults(state.lastJobResults);
         await loadState(false);
@@ -1568,12 +1569,12 @@
         qs("snapshot-modal").classList.add("hidden");
         renderJobResults([
           {
-            sender: `Missed #${mid}`,
+            sender: t("results.missed_label", { id: mid }),
             action: "archive_and_unsub",
             status: "ok",
             detail: resp.archived
-              ? "Marked as unsubscribed & archived from Inbox"
-              : "Marked as unsubscribed",
+              ? t("results.marked_unsub_archived")
+              : t("results.marked_unsub"),
           },
         ]);
         await loadState(false);
@@ -1594,7 +1595,7 @@
         });
         renderJobResults([
           {
-            sender: `Missed #${target.dataset.missedRetry}`,
+            sender: t("results.missed_label", { id: target.dataset.missedRetry }),
             status: res.outcome.status === "success" ? "ok" : res.outcome.status,
             detail: res.outcome.detail,
             opened_target: res.outcome.final_url,

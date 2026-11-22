@@ -86,8 +86,9 @@ def resolve_ui_language(
     """Resolve UI locale from explicit config, then Accept-Language header, else 'en'."""
     codes = set(available_codes) if available_codes is not None else {x["code"] for x in list_available_ui_locales()}
     fallback = "en" if "en" in codes else (sorted(codes)[0] if codes else "en")
-    if configured_lang:
-        return _match_locale_tag(configured_lang, codes) or fallback
+    norm_config = str(configured_lang or "").strip()
+    if norm_config and norm_config.lower() != "auto":
+        return _match_locale_tag(norm_config, codes) or fallback
 
     weighted: list[tuple[float, int, str]] = []
     for idx, part in enumerate(str(accept_language or "").split(",")):
