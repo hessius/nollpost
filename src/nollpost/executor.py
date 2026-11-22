@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from nollpost.config import TriageConfig
 from nollpost.extractor import extract_pdf_attachment
-from nollpost.mail_bridge import AppleMailBridge
+from nollpost.mail_bridge import AppleMailBridge, is_gmail_all_mail_destination
 from nollpost.models import ClassifiedItem, ExecutionItemResult, PlaywrightOutcome
 from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.playwright_runner import is_public_http_url, run_playwright_action, try_rfc8058_one_click
@@ -612,7 +612,11 @@ class BatchExecutor:
                         self.store.increment_stat("total_archived", chunk_moved)
                 except Exception as exc:
                     reconciled_moved: set[str] = set()
-                    if isinstance(exc, TimeoutError) and hasattr(self.bridge, "list_mailbox_ids"):
+                    skip_bg_reconcile = (
+                        getattr(self.bridge, "gmail_archive_strategy", "") == "background"
+                        and is_gmail_all_mail_destination(arch_box)
+                    )
+                    if isinstance(exc, TimeoutError) and hasattr(self.bridge, "list_mailbox_ids") and not skip_bg_reconcile:
                         try:
                             still_present = await asyncio.to_thread(self.bridge.list_mailbox_ids, acct, src_box)
                             if still_present is not None:

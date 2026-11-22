@@ -25,7 +25,7 @@
 - **Python 3.12+**
 - **Playwright Chromium** (`playwright install chromium`)
 - macOS **Automation** permission for your terminal/Python to control `Mail.app` (`System Settings → Privacy & Security → Automation`)
-- *(Default Gmail mode only)* macOS **Accessibility** permission if using `gmail_archive_strategy = "ui_menu"` (`System Settings → Privacy & Security → Accessibility`)
+- *(Optional `ui_menu` Gmail mode only)* macOS **Accessibility** permission if switching from the default `"background"` strategy to `gmail_archive_strategy = "ui_menu"` (`System Settings → Privacy & Security → Accessibility`)
 
 ## Installation
 

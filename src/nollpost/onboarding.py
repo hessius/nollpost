@@ -192,7 +192,7 @@ def run_doctor(
                     "accessibility",
                     "warn",
                     f"{ax_detail} (needed for gmail_archive_strategy = \"ui_menu\")",
-                    "Enable Accessibility for your terminal app in System Settings → Privacy & Security → Accessibility, or switch gmail_archive_strategy to \"tag_staging\" or \"two_hop\".",
+                    "Enable Accessibility for your terminal app in System Settings → Privacy & Security → Accessibility, or switch gmail_archive_strategy to \"background\" (default), \"tag_staging\", or \"two_hop\".",
                 )
             )
 

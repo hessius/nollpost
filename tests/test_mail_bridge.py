@@ -38,7 +38,8 @@ def test_list_accounts_resolves_gmail_container_archive(monkeypatch):
     def fake_osascript(script: str, timeout: int = 35) -> str:
         return (
             "iCloud|me@icloud.com|INBOX;Archive;Sent Messages\n"
-            "Google|me@gmail.com|INBOX;[Gmail]/All e-post;[Gmail]/Skickat"
+            "Google|me@gmail.com|INBOX;[Gmail]/All e-post;[Gmail]/Skickat\n"
+            "GoogleUK|uk@gmail.com|INBOX;[Google Mail]/All Mail;[Google Mail]/Sent Mail"
         )
 
     monkeypatch.setattr("nollpost.mail_bridge.run_osascript", fake_osascript)
@@ -47,10 +48,12 @@ def test_list_accounts_resolves_gmail_container_archive(monkeypatch):
     assert by_name["iCloud"].archive_mailbox == "Archive"
     assert by_name["Google"].archive_mailbox == "[Gmail]/All e-post"
     assert by_name["Google"].sent_mailbox == "[Gmail]/Skickat"
+    assert by_name["GoogleUK"].archive_mailbox == "[Google Mail]/All Mail"
     assert 'resolveMailbox(targetAccount, "[Gmail]/All e-post")' in mailbox_ref_applescript("[Gmail]/All e-post")
     assert is_gmail_all_mail_destination("[Gmail]/All e-post") is True
     assert is_gmail_all_mail_destination("[Gmail]/Arkiv") is True
     assert is_gmail_all_mail_destination("[Google Mail]/All Mail") is True
+    assert is_gmail_all_mail_destination("[Google Mail]/Arkiv") is True
     assert is_gmail_all_mail_destination("Archive") is False
 
 
@@ -106,19 +109,54 @@ def test_gmail_background_archive_default_and_safety_guards(monkeypatch):
     def fake_bg_osascript(script: str, timeout: int = 120) -> str:
         scripts.append(script)
         assert '"[Gmail]"' in script and '"[Google Mail]"' in script
+        assert "every mailbox of targetAccount" in script
         assert "papperskorgen" in script.lower()
         assert "if msgRfc is not missing value and msgRfc is not \"\"" in script
         assert "prevTrashIds" in script
         assert "move newMsg to archMailbox" in script
         assert "move newMsg to sourceMailbox" in script
+        assert "__STRANDED__:" in script
         assert "System Events" not in script and "activate" not in script
         assert "delete " not in script.lower()
-        return "10,11"
+        return "20" if "{20}" in script else "10,11"
 
     monkeypatch.setattr("nollpost.mail_bridge.run_osascript", fake_bg_osascript)
     moved = bridge.mark_read_and_archive("Google", "INBOX", "[Gmail]/All e-post", ["10", "11"])
     assert moved == ["10", "11"]
     assert len(scripts) == 1
+    assert "set read status of targetMsg to true" in scripts[0]
+
+    # mark_read=False omits read-status mutation
+    scripts.clear()
+    moved_unread = bridge.mark_read_and_archive("GoogleUK", "INBOX", "[Google Mail]/All Mail", ["20"], mark_read=False)
+    assert moved_unread == ["20"]
+    assert "set read status" not in scripts[0]
+
+    # Non-Gmail destination still uses direct _move_to_mailbox under default background strategy
+    scripts.clear()
+
+    def fake_direct_osascript(script: str, timeout: int = 120) -> str:
+        scripts.append(script)
+        return "30"
+
+    monkeypatch.setattr("nollpost.mail_bridge.run_osascript", fake_direct_osascript)
+    moved_icloud = bridge.mark_read_and_archive("iCloud", "INBOX", "Archive", ["30"])
+    assert moved_icloud == ["30"]
+    assert "trashBox" not in scripts[0] and "move targetMsg to destMailbox" in scripts[0]
+
+    # Empty / non-digit IDs do not invoke osascript
+    scripts.clear()
+    assert bridge.mark_read_and_archive("Google", "INBOX", "[Gmail]/All e-post", ["", "abc"]) == []
+    assert scripts == []
+
+    # Forbidden destination raises even under default background strategy
+    with pytest.raises(ValueError, match="prohibited"):
+        bridge.mark_read_and_archive("Google", "INBOX", "Papperskorgen", ["10"])
+
+    # Stranded response raises loudly rather than silently dropping the ID
+    monkeypatch.setattr("nollpost.mail_bridge.run_osascript", lambda s, timeout=120: "__STRANDED__:10|")
+    with pytest.raises(RuntimeError, match="Trash"):
+        bridge.mark_read_and_archive("Google", "INBOX", "[Gmail]/All e-post", ["10"])
 
 
 def test_gmail_ui_archive_verifies_target_and_stops_on_surprise(monkeypatch):
@@ -212,3 +250,56 @@ def test_resolve_lock_path_respects_override_and_default(tmp_path, monkeypatch):
     mcp_dir = tmp_path / "Library/Application Support/apple-mail-mcp"
     mcp_dir.mkdir(parents=True)
     assert resolve_lock_path() == mcp_dir / "mail_automation.lock"
+
+
+def test_executor_skips_timeout_inbox_reconcile_in_background_gmail_mode(tmp_path, monkeypatch):
+    import asyncio
+    from nollpost.config import load_config
+    from nollpost.executor import BatchExecutor
+    from nollpost.models import ClassifiedItem, ExtractedEmailInfo, MailHeader
+    from nollpost.store import TriageStore
+
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+
+    class _TimeoutBgBridge:
+        gmail_archive_strategy = "background"
+
+        def mark_read_and_archive(self, *args, **kwargs):
+            raise TimeoutError("osascript timed out")
+
+        def list_mailbox_ids(self, account, mailbox="INBOX"):
+            return set()  # Absent from INBOX (could be in Trash)
+
+    item = ClassifiedItem(
+        uid="Google:INBOX:10",
+        header=MailHeader(
+            account="Google",
+            mailbox="INBOX",
+            internal_id="10",
+            rfc_message_id="m10@gmail.com",
+            subject="News",
+            sender="News <n@example.com>",
+            sender_email="n@example.com",
+            sender_domain="example.com",
+            date_received="2026-11-22T10:00:00",
+            is_read=False,
+            is_flagged=False,
+            attachment_count=0,
+        ),
+        extracted=ExtractedEmailInfo(),
+        category="updates",
+        subcategory="newsletter",
+        default_action="archive",
+        allowed_actions=["archive", "no_action"],
+        reason="test",
+        archive_mailbox="[Gmail]/All e-post",
+    )
+    executor = BatchExecutor(cfg, store, _TimeoutBgBridge())  # type: ignore[arg-type]
+    results = asyncio.run(executor.execute_batch([(item, "archive")], {"Google": []}))
+    assert results[0].status == "failed"
+    assert "verified moved" not in results[0].detail
+    store.close()
