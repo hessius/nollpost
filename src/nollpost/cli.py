@@ -10,8 +10,9 @@ import sys
 
 import uvicorn
 
-from nollpost.config import load_config
+from nollpost.config import TriageConfig, get_cache_dir, get_config_path, get_data_dir, load_config
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
+from nollpost.onboarding import format_doctor_report, run_doctor, run_setup
 from nollpost.scanner import run_scan
 from nollpost.store import TriageStore
 from nollpost.web import create_app
@@ -81,13 +82,50 @@ def main(argv: list[str] | None = None) -> int:
     mark_p.add_argument("--no-archive", action="store_true", help="Do not archive the message from INBOX")
     mark_p.add_argument("--note", default="Marked as unsubscribed by user")
 
+    doctor_p = sub.add_parser("doctor", help="Run preflight checks for macOS, Mail.app, permissions, and Chromium")
+    doctor_p.add_argument("--json", action="store_true", dest="as_json")
+
+    setup_p = sub.add_parser("setup", help="Interactive first-run onboarding wizard")
+    setup_p.add_argument("--yes", action="store_true", help="Accept defaults without interactive prompts")
+    setup_p.add_argument("--skip-browser", action="store_true", help="Skip Playwright Chromium install check")
+
     args = parser.parse_args(argv)
+    if args.command in ("doctor", "setup"):
+        config_error = ""
+        try:
+            config = load_config(ensure_files=False)
+        except Exception as exc:
+            config_error = str(exc)
+            cfg_path = get_config_path()
+            data_dir = get_data_dir()
+            cache_dir = get_cache_dir()
+            config = TriageConfig(
+                config_path=cfg_path,
+                data_dir=data_dir,
+                cache_dir=cache_dir,
+                db_path=data_dir / "state.db",
+                invoices_dir=cache_dir / "invoices",
+                screenshots_dir=data_dir / "screenshots",
+            )
+        bridge = AppleMailBridge(
+            archive_overrides=config.archive_map,
+            gmail_archive_strategy=config.gmail_archive_strategy,
+        )
+        if args.command == "doctor":
+            ok, checks = run_doctor(config, bridge, config_error=config_error)
+            if args.as_json:
+                print(json.dumps({"ok": ok, "checks": [c.to_dict() for c in checks]}, ensure_ascii=False, indent=2))
+            else:
+                print(format_doctor_report(checks))
+            return 0 if ok else 1
+        return run_setup(config, bridge, yes=args.yes, skip_browser=args.skip_browser)
+
     config = load_config(ensure_files=True)
-    store = TriageStore(config.db_path)
     bridge = AppleMailBridge(
         archive_overrides=config.archive_map,
         gmail_archive_strategy=config.gmail_archive_strategy,
     )
+    store = TriageStore(config.db_path)
 
     if args.command == "scan":
         snap = run_scan(config, store, bridge, mode=args.mode)
