@@ -1,0 +1,36 @@
+name: Missed Unsubscribe Pattern
+description: Report a newsletter or service where Nollpost failed to extract or click the unsubscribe flow
+title: "[missed-unsub] <domain>: <short failure reason>"
+labels: ["patterns", "missed-unsubscribe"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Nollpost's unsubscribe patterns!
+        Please generate a **privacy-redacted report** using either:
+        - The **Copy Redacted Bug Report** button inside the Missed-Unsubscribe Snapshot Modal in the web UI, or
+        - Running `nollpost missed export <id>` in your terminal.
+
+        Always review the output to confirm personal email addresses, names, and auth tokens have been replaced with `<redacted>`.
+  - type: textarea
+    id: redacted_report
+    attributes:
+      label: Privacy-Redacted Bug Report
+      description: Paste the output from `nollpost missed export <id>` or "Copy Redacted Bug Report".
+      placeholder: |
+        ### Redacted Missed-Unsubscribe Report
+        - Sender Domain: example.com
+        ...
+    validations:
+      required: true
+  - type: input
+    id: language
+    attributes:
+      label: Email / Page Language
+      description: Language of the email footer or landing page (e.g., en, sv, de, fr)
+      placeholder: en
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional Context
+      description: What did you see if you opened the page manually (e.g., two-step confirmation button, toggle switch, login required, CAPTCHA)?

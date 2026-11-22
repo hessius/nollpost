@@ -12,6 +12,7 @@ import uvicorn
 
 from nollpost.config import TriageConfig, get_cache_dir, get_config_path, get_data_dir, load_config
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
+from nollpost.missed_export import format_missed_bug_report, redact_missed_entry
 from nollpost.onboarding import format_doctor_report, run_doctor, run_setup
 from nollpost.scanner import run_scan
 from nollpost.store import TriageStore
@@ -66,9 +67,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stats", help="Show lifetime triage tallies")
 
-    missed_p = sub.add_parser("missed", help="List missed/failed unsubscribe snapshots for parser improvement")
+    missed_p = sub.add_parser("missed", help="List or export missed/failed unsubscribe snapshots")
     missed_p.add_argument("--all", action="store_true", help="Include resolved items")
     missed_p.add_argument("--json", action="store_true", dest="as_json")
+    missed_sub = missed_p.add_subparsers(dest="missed_command")
+    missed_export_p = missed_sub.add_parser("export", help="Print a privacy-redacted bug report for a missed entry")
+    missed_export_p.add_argument("id", type=int)
+    missed_export_p.add_argument("--json", action="store_true", dest="export_json")
 
     resolve_p = sub.add_parser("resolve-missed", help="Mark a missed-unsub queue entry as resolved")
     resolve_p.add_argument("id", type=int)
@@ -141,6 +146,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "missed":
+        if getattr(args, "missed_command", None) == "export":
+            entry = store.get_missed_unsubscribe(args.id)
+            if not entry:
+                print(f"Missed-unsub #{args.id} not found", file=sys.stderr)
+                return 1
+            if args.export_json:
+                print(json.dumps(redact_missed_entry(entry), ensure_ascii=False, indent=2))
+            else:
+                print(format_missed_bug_report(entry))
+            return 0
         entries = store.list_missed_unsubscribes(include_resolved=args.all)
         if args.as_json:
             print(json.dumps(entries, ensure_ascii=False, indent=2))
