@@ -29,14 +29,18 @@ class Nollpost < Formula
     (app_contents/"MacOS").mkpath
     (app_contents/"Resources").mkpath
 
+    target_arch = Hardware::CPU.intel? ? "x86_64" : "arm64"
     system "/usr/bin/swiftc", "-O", "-parse-as-library",
+           "-target", "#{target_arch}-apple-macos13.0",
            "-framework", "Cocoa", "-framework", "ApplicationServices",
            (buildpath/"macos/NollpostMenuBar/main.swift").to_s,
            "-o", (app_contents/"MacOS/Nollpost").to_s
 
-    app_ver = build.head? ? "0.1.0" : version.to_s
+    head_ver = (buildpath/"pyproject.toml").read[/^version\s*=\s*"([^"]+)"/, 1]
+    app_ver = build.head? ? (head_ver || "0.1.0") : version.to_s
     plist = (buildpath/"macos/NollpostMenuBar/Info.plist").read
-    plist = plist.gsub("<string>0.1.0</string>", "<string>#{app_ver}</string>")
+    plist = plist.gsub(%r{(<key>CFBundleShortVersionString</key>\s*<string>)[^<]*(</string>)}, "\\1#{app_ver}\\2")
+    plist = plist.gsub(%r{(<key>CFBundleVersion</key>\s*<string>)[^<]*(</string>)}, "\\1#{app_ver}\\2")
     (app_contents/"Info.plist").write(plist)
 
     system "/usr/bin/codesign", "--force", "--deep",

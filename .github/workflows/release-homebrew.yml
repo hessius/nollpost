@@ -11,7 +11,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-macos-app:
@@ -19,7 +19,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
@@ -44,15 +46,16 @@ jobs:
             --version "${{ steps.meta.outputs.version }}" \
             --output dist
 
-      - name: Compute source tarball SHA256 and render Formula/nollpost.rb
+      - name: Fetch GitHub tag tarball SHA256 and render Formula/nollpost.rb
         run: |
           TAG="${{ steps.meta.outputs.tag }}"
           TARBALL="dist/nollpost-${TAG}.tar.gz"
-          git archive --format=tar.gz --prefix="nollpost-${{ steps.meta.outputs.version }}/" -o "$TARBALL" HEAD
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL "$URL" -o "$TARBALL"
           python3 scripts/update_homebrew_formula.py \
             --version "${{ steps.meta.outputs.version }}" \
             --tarball "$TARBALL" \
-            --url "https://github.com/Hessius/nollpost/archive/refs/tags/${TAG}.tar.gz" \
+            --url "$URL" \
             --output dist/nollpost.rb
 
       - name: Upload release artifacts

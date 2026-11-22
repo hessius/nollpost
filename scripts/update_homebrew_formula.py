@@ -14,8 +14,8 @@ FORMULA_PATH = REPO_ROOT / "Formula" / "nollpost.rb"
 FORMULA_TEMPLATE = """class Nollpost < Formula
   desc "Zero-token multi-inbox Apple Mail triage board and Playwright unsubscribe runner"
   homepage "https://github.com/Hessius/nollpost"
-  url "{url}"
-  sha256 "{sha256}"
+  url "__URL__"
+  sha256 "__SHA256__"
   license "MIT"
   head "https://github.com/Hessius/nollpost.git", branch: "main"
 
@@ -33,8 +33,8 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
 
     (bin/"nollpost").write <<~BASH
       #!/bin/bash
-      export PLAYWRIGHT_BROWSERS_PATH="#{{var}}/nollpost/ms-playwright"
-      exec "#{{libexec}}/bin/nollpost" "$@"
+      export PLAYWRIGHT_BROWSERS_PATH="#{var}/nollpost/ms-playwright"
+      exec "#{libexec}/bin/nollpost" "$@"
     BASH
     (bin/"nollpost").chmod 0755
 
@@ -42,14 +42,18 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
     (app_contents/"MacOS").mkpath
     (app_contents/"Resources").mkpath
 
+    target_arch = Hardware::CPU.intel? ? "x86_64" : "arm64"
     system "/usr/bin/swiftc", "-O", "-parse-as-library",
+           "-target", "#{target_arch}-apple-macos13.0",
            "-framework", "Cocoa", "-framework", "ApplicationServices",
            (buildpath/"macos/NollpostMenuBar/main.swift").to_s,
            "-o", (app_contents/"MacOS/Nollpost").to_s
 
-    app_ver = build.head? ? "0.1.0" : version.to_s
+    head_ver = (buildpath/"pyproject.toml").read[/^version\\s*=\\s*"([^"]+)"/, 1]
+    app_ver = build.head? ? (head_ver || "0.1.0") : version.to_s
     plist = (buildpath/"macos/NollpostMenuBar/Info.plist").read
-    plist = plist.gsub("<string>0.1.0</string>", "<string>#{{app_ver}}</string>")
+    plist = plist.gsub(%r{(<key>CFBundleShortVersionString</key>\\s*<string>)[^<]*(</string>)}, "\\\\1#{app_ver}\\\\2")
+    plist = plist.gsub(%r{(<key>CFBundleVersion</key>\\s*<string>)[^<]*(</string>)}, "\\\\1#{app_ver}\\\\2")
     (app_contents/"Info.plist").write(plist)
 
     system "/usr/bin/codesign", "--force", "--deep",
@@ -62,28 +66,28 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
     run "bin/playwright",
         args:         ["install", "chromium"],
         base:         :libexec,
-        env:          {{ "PLAYWRIGHT_BROWSERS_PATH" => "{{{{var}}}}/nollpost/ms-playwright" }},
+        env:          { "PLAYWRIGHT_BROWSERS_PATH" => "{{var}}/nollpost/ms-playwright" },
         print_stdout: true
   end
 
   def caveats
     <<~EOS
       Nollpost Chromium binaries are stored in:
-        #{{var}}/nollpost/ms-playwright
+        #{var}/nollpost/ms-playwright
 
       Run first-time setup and verify Apple Mail permissions:
         nollpost setup
         nollpost doctor
 
       Launch the optional macOS menu-bar wrapper:
-        open #{{opt_prefix}}/Nollpost.app
+        open #{opt_prefix}/Nollpost.app
       Or copy to /Applications:
-        ditto #{{opt_prefix}}/Nollpost.app /Applications/Nollpost.app
+        ditto #{opt_prefix}/Nollpost.app /Applications/Nollpost.app
     EOS
   end
 
   test do
-    assert_match "usage: nollpost", shell_output("#{{bin}}/nollpost --help")
+    assert_match "usage: nollpost", shell_output("#{bin}/nollpost --help")
     assert_predicate prefix/"Nollpost.app/Contents/MacOS/Nollpost", :executable?
   end
 end
@@ -105,7 +109,7 @@ def render_formula(*, version: str, sha256: str, url: Optional[str] = None) -> s
     if not re.fullmatch(r"[0-9a-f]{64}", sha256.lower()):
         raise ValueError(f"Invalid SHA256 hex digest {sha256!r}")
     tarball_url = url or f"https://github.com/Hessius/nollpost/archive/refs/tags/v{clean_ver}.tar.gz"
-    return FORMULA_TEMPLATE.format(url=tarball_url, sha256=sha256.lower())
+    return FORMULA_TEMPLATE.replace("__URL__", tarball_url).replace("__SHA256__", sha256.lower())
 
 
 def main(argv: list[str] | None = None) -> int:

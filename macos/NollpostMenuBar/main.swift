@@ -2,7 +2,7 @@ import ApplicationServices
 import Cocoa
 import Foundation
 
-private enum AutomationStatus {
+private enum AutomationStatus: Sendable {
     case granted
     case denied
     case consentRequired
@@ -237,24 +237,31 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         return env
     }
 
-    private func checkMailAutomationPermission(prompt: Bool) -> AutomationStatus {
-        let desc = NSAppleEventDescriptor(bundleIdentifier: "com.apple.mail")
-        guard let aeDesc = desc.aeDesc else {
-            return .error(-1)
-        }
-        let wild = AEEventClass(typeWildCard)
-        let status = AEDeterminePermissionToAutomateTarget(aeDesc, wild, AEEventID(typeWildCard), prompt)
-        switch status {
-        case noErr:
-            return .granted
-        case OSStatus(errAEEventNotPermitted):
-            return .denied
-        case -1744:
-            return .consentRequired
-        case OSStatus(procNotFound):
-            return .mailNotRunning
-        default:
-            return .error(status)
+    private nonisolated static func queryMailAutomationPermission(prompt: Bool) async -> AutomationStatus {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let desc = NSAppleEventDescriptor(bundleIdentifier: "com.apple.mail")
+                guard let aeDesc = desc.aeDesc else {
+                    continuation.resume(returning: .error(-1))
+                    return
+                }
+                let wild = AEEventClass(typeWildCard)
+                let status = AEDeterminePermissionToAutomateTarget(aeDesc, wild, AEEventID(typeWildCard), prompt)
+                let result: AutomationStatus
+                switch status {
+                case noErr:
+                    result = .granted
+                case OSStatus(errAEEventNotPermitted):
+                    result = .denied
+                case -1744:
+                    result = .consentRequired
+                case OSStatus(procNotFound):
+                    result = .mailNotRunning
+                default:
+                    result = .error(status)
+                }
+                continuation.resume(returning: result)
+            }
         }
     }
 
@@ -273,8 +280,8 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func promptIfAutomationMissingBeforeLaunch() -> Bool {
-        let auto = checkMailAutomationPermission(prompt: true)
+    private func promptIfAutomationMissingBeforeLaunch() async -> Bool {
+        let auto = await Self.queryMailAutomationPermission(prompt: true)
         switch auto {
         case .granted:
             return true
@@ -314,8 +321,11 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
             pendingBrowserOpen = true
             return
         case .stopped, .failed:
-            guard promptIfAutomationMissingBeforeLaunch() else { return }
-            startServer(openBrowserWhenReady: true)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard await self.promptIfAutomationMissingBeforeLaunch() else { return }
+                self.startServer(openBrowserWhenReady: true)
+            }
         }
     }
 
@@ -359,18 +369,20 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty {
+                handle.readabilityHandler = nil
                 return
             }
-            guard let chunk = String(data: data, encoding: .utf8) else { return }
-            DispatchQueue.main.async {
+            let chunk = String(decoding: data, as: UTF8.self)
+            Task { @MainActor [weak self] in
                 self?.handleServerOutput(chunk)
             }
         }
 
         proc.terminationHandler = { [weak self] finished in
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.outputPipe?.fileHandleForReading.readabilityHandler = nil
+                self.outputPipe = nil
                 self.readyCheckTimer?.invalidate()
                 self.readyCheckTimer = nil
                 if self.serverProcess === finished {
@@ -426,6 +438,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
 
     private func waitUntilServerReachable(url: URL, attemptsRemaining: Int) {
         readyCheckTimer?.invalidate()
+        guard let proc = serverProcess, proc.isRunning else { return }
         guard let staticURL = URL(string: "/static/index.html", relativeTo: url)?.absoluteURL else {
             finishServerReady(url)
             return
@@ -433,18 +446,24 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         var req = URLRequest(url: staticURL)
         req.timeoutInterval = 0.5
         URLSession.shared.dataTask(with: req) { [weak self] _, response, _ in
-            DispatchQueue.main.async {
-                guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self, let proc = self.serverProcess, proc.isRunning else { return }
                 if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                     self.finishServerReady(url)
                     return
                 }
-                if attemptsRemaining <= 0 || self.serverProcess == nil {
-                    self.finishServerReady(url)
+                if attemptsRemaining <= 0 {
+                    self.pendingBrowserOpen = false
+                    self.serverState = .failed("startup timed out")
+                    self.showAlert(
+                        style: .warning,
+                        title: "Nollpost Startup Timed Out",
+                        message: "The local Review Board server did not become reachable in time. Check menubar.log for details."
+                    )
                     return
                 }
                 self.readyCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         self?.waitUntilServerReachable(url: url, attemptsRemaining: attemptsRemaining - 1)
                     }
                 }
@@ -465,6 +484,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         readyCheckTimer = nil
         pendingBrowserOpen = false
         outputPipe?.fileHandleForReading.readabilityHandler = nil
+        outputPipe = nil
         guard let proc = serverProcess else { return }
         serverProcess = nil
         if proc.isRunning {
@@ -482,27 +502,30 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkAndPromptPermissions(_ sender: Any?) {
-        let auto = checkMailAutomationPermission(prompt: true)
-        let axTrusted = checkAccessibilityPermission(prompt: true)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let auto = await Self.queryMailAutomationPermission(prompt: true)
+            let axTrusted = self.checkAccessibilityPermission(prompt: true)
 
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "macOS Permissions for Nollpost"
-        alert.informativeText = """
-        Mail.app Automation (required): \(auto.label)
-        Accessibility UI Scripting (only for Gmail ui_menu mode): \(axTrusted ? "Granted" : "Not granted")
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "macOS Permissions for Nollpost"
+            alert.informativeText = """
+            Mail.app Automation (required): \(auto.label)
+            Accessibility UI Scripting (only for Gmail ui_menu mode): \(axTrusted ? "Granted" : "Not granted")
 
-        Tip: If Mail.app was not running when checked, start Mail.app and click Check & Request Permissions again, or approve Nollpost under System Settings -> Privacy & Security.
-        """
-        alert.addButton(withTitle: "Done")
-        alert.addButton(withTitle: "Open Automation Settings")
-        alert.addButton(withTitle: "Open Accessibility Settings")
-        NSApp.activate(ignoringOtherApps: true)
-        let res = alert.runModal()
-        if res == .alertSecondButtonReturn {
-            openPrivacyPane("Privacy_Automation")
-        } else if res == .alertThirdButtonReturn {
-            openPrivacyPane("Privacy_Accessibility")
+            Tip: If Mail.app was not running when checked, start Mail.app and click Check & Request Permissions again, or approve Nollpost under System Settings -> Privacy & Security.
+            """
+            alert.addButton(withTitle: "Done")
+            alert.addButton(withTitle: "Open Automation Settings")
+            alert.addButton(withTitle: "Open Accessibility Settings")
+            NSApp.activate(ignoringOtherApps: true)
+            let res = alert.runModal()
+            if res == .alertSecondButtonReturn {
+                self.openPrivacyPane("Privacy_Automation")
+            } else if res == .alertThirdButtonReturn {
+                self.openPrivacyPane("Privacy_Accessibility")
+            }
         }
     }
 
@@ -511,13 +534,12 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
             showMissingBinaryAlert()
             return
         }
+        let env = childEnvironment(for: exe)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let proc = Process()
             proc.executableURL = exe
             proc.arguments = ["doctor", "--json"]
-            if let self {
-                proc.environment = DispatchQueue.main.sync { self.childEnvironment(for: exe) }
-            }
+            proc.environment = env
             let outPipe = Pipe()
             proc.standardOutput = outPipe
             proc.standardError = outPipe
@@ -526,16 +548,18 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
                 let data = outPipe.fileHandleForReading.readDataToEndOfFile()
                 proc.waitUntilExit()
                 let formatted = Self.formatDoctorJSON(data)
-                DispatchQueue.main.async {
+                let ok = proc.terminationStatus == 0
+                Task { @MainActor [weak self] in
                     self?.showAlert(
-                        style: proc.terminationStatus == 0 ? .informational : .warning,
-                        title: proc.terminationStatus == 0 ? "Nollpost Doctor: All Critical Checks Passed" : "Nollpost Doctor: Action Needed",
+                        style: ok ? .informational : .warning,
+                        title: ok ? "Nollpost Doctor: All Critical Checks Passed" : "Nollpost Doctor: Action Needed",
                         message: formatted
                     )
                 }
             } catch {
-                DispatchQueue.main.async {
-                    self?.showAlert(style: .critical, title: "Diagnostics Failed", message: error.localizedDescription)
+                let errMsg = error.localizedDescription
+                Task { @MainActor [weak self] in
+                    self?.showAlert(style: .critical, title: "Diagnostics Failed", message: errMsg)
                 }
             }
         }
