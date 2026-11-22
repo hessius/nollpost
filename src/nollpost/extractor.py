@@ -401,7 +401,7 @@ def _extract_pertinent_url(
 
         if same_brand_host or any(
             dest_host == d or dest_host.endswith("." + d) or dest_root == wr
-            for d, wr in zip(wanted_lower, wanted_roots)
+            for d, wr in zip(wanted_lower, wanted_roots, strict=True)
         ):
             score += 4.0
 

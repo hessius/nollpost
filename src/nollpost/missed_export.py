@@ -41,7 +41,6 @@ def _looks_like_token_segment(seg: str) -> bool:
     if not seg:
         return False
     decoded = unquote(seg)
-    lowered = decoded.lower()
     if "@" in decoded or "%40" in seg.lower():
         return True
     if decoded.startswith("eyJ") and len(decoded) >= 12:
@@ -370,7 +369,7 @@ def format_missed_bug_report(
     """Format a missed_unsubscribes entry as a redacted Markdown bug report."""
     red = redact_missed_entry(entry, account_emails=account_emails)
     links_lines = "\n".join(
-        f"- {l['text'] or '(no text)'}: `{l['href']}`" for l in red["candidate_links"]
+        f"- {lnk['text'] or '(no text)'}: `{lnk['href']}`" for lnk in red["candidate_links"]
     ) or "- (none)"
     target_line = f"`{red['final_url']}`" if red["final_url"] else "(none)"
     return (

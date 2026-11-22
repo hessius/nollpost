@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-hygiene:
+    name: Lint & Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          uv venv --clear --python 3.13
+          uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: Ruff lint
+        run: .venv/bin/ruff check src/ tests/ scripts/
+      - name: PII & secret hygiene check
+        run: .venv/bin/python scripts/check_hygiene.py
+
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          uv venv --clear --python 3.13
+          uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: Install Playwright Chromium (Linux)
+        if: runner.os == 'Linux'
+        run: .venv/bin/playwright install --with-deps chromium
+      - name: Install Playwright Chromium (macOS)
+        if: runner.os == 'macOS'
+        run: .venv/bin/playwright install chromium
+      - name: Run pytest
+        run: .venv/bin/pytest -v
