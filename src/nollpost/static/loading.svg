@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Nollpost">
+  <title>Nollpost</title>
+  <defs>
+    <linearGradient id="snabel-grad" x1="15%" y1="10%" x2="85%" y2="90%">
+      <stop class="sn-stop-1" offset="0%" stop-color="#1c1917" />
+      <stop class="sn-stop-2" offset="50%" stop-color="#292524" />
+      <stop class="sn-stop-3" offset="100%" stop-color="#0c0a09" />
+    </linearGradient>
+    <style>
+      @media (prefers-color-scheme: dark) {
+        .sn-stop-1 { stop-color: #fafaf9; }
+        .sn-stop-2 { stop-color: #e7e5e4; }
+        .sn-stop-3 { stop-color: #d6d3d1; }
+      }
+      .sn-zero {
+        stroke-dasharray: 514 522;
+        stroke-dashoffset: 514;
+        animation: draw-zero 4.86s cubic-bezier(0.65, 0, 0.35, 1) infinite alternate;
+      }
+      .sn-swirl {
+        stroke-dasharray: 1116 1124;
+        stroke-dashoffset: 1116;
+        animation: draw-swirl 4.86s cubic-bezier(0.65, 0, 0.35, 1) infinite alternate;
+      }
+      .sn-slash {
+        stroke-dasharray: 171 179;
+        stroke-dashoffset: 171;
+        animation: draw-slash 4.86s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate;
+      }
+      @keyframes draw-zero { 0%, 4% { stroke-dashoffset: 514; } 30%, 100% { stroke-dashoffset: 0; } }
+      @keyframes draw-swirl { 0%, 29% { stroke-dashoffset: 1116; } 72%, 100% { stroke-dashoffset: 0; } }
+      @keyframes draw-slash { 0%, 73% { stroke-dashoffset: 171; } 86%, 100% { stroke-dashoffset: 0; } }
+      @media (prefers-reduced-motion: reduce) {
+        .sn-zero, .sn-swirl, .sn-slash {
+          animation: none;
+          stroke-dashoffset: 0;
+        }
+      }
+    </style>
+  </defs>
+  <g fill="none" stroke="url(#snabel-grad)" stroke-linecap="butt" stroke-linejoin="round">
+    <path class="sn-zero" stroke-width="36" d="M 319 256 C 319 314.6 292.1 352 255 352 C 217.9 352 191 314.6 191 256 C 191 197.4 217.9 160 255 160 C 292.1 160 319 197.4 319 256 Z" />
+    <path class="sn-swirl" stroke-width="36" d="M 319 256 C 319 322 331 352 361 352 C 391 352 407 312 407 244 C 407 148.8 341.9 74 259 74 C 172.8 74 105 154.1 105 256 C 105 357.9 173.6 438 261 438 C 290.2 438 318.9 428.4 343.7 410.3" />
+    <path class="sn-slash" stroke-width="26" d="M 298.1 182.2 L 211.9 329.8" />
+  </g>
+</svg>

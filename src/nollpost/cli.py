@@ -13,7 +13,7 @@ import uvicorn
 from nollpost.config import TriageConfig, get_cache_dir, get_config_path, get_data_dir, load_config
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
 from nollpost.missed_export import format_missed_bug_report, redact_missed_entry
-from nollpost.onboarding import format_doctor_report, run_doctor, run_setup
+from nollpost.onboarding import format_doctor_report, run_app_command, run_doctor, run_setup
 from nollpost.scanner import run_scan
 from nollpost.store import TriageStore
 from nollpost.web import create_app
@@ -100,7 +100,21 @@ def main(argv: list[str] | None = None) -> int:
     setup_p.add_argument("--yes", action="store_true", help="Accept defaults without interactive prompts")
     setup_p.add_argument("--skip-browser", action="store_true", help="Skip Playwright Chromium install check")
 
+    app_p = sub.add_parser("app", help="Install Nollpost.app into /Applications and launch the menu-bar icon")
+    app_p.add_argument(
+        "--install-only",
+        action="store_true",
+        help="Copy Nollpost.app into /Applications (or ~/Applications) without opening it",
+    )
+    app_p.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Alias for --install-only",
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "app":
+        return run_app_command(install_only=args.install_only, no_open=args.no_open)
     if args.command in ("doctor", "setup"):
         config_error = ""
         try:

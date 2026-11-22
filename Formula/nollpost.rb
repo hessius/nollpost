@@ -66,14 +66,15 @@ class Nollpost < Formula
       Nollpost Chromium binaries are stored in:
         #{var}/nollpost/ms-playwright
 
+      Nollpost.app is built inside Homebrew's Cellar because Homebrew cannot write
+      directly into /Applications during formula installation.
+
+      Install Nollpost.app into /Applications and launch the menu-bar icon:
+        nollpost app
+
       Run first-time setup and verify Apple Mail permissions:
         nollpost setup
         nollpost doctor
-
-      Launch the optional macOS menu-bar wrapper:
-        open #{opt_prefix}/Nollpost.app
-      Or copy to /Applications:
-        ditto #{opt_prefix}/Nollpost.app /Applications/Nollpost.app
     EOS
   end
 

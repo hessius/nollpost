@@ -274,3 +274,25 @@ async def test_ui_renders_english_and_live_switches_to_swedish_in_chromium(tmp_p
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_animated_loading_svg_and_placeholders_served(tmp_path: Path, monkeypatch):
+    _setup_env(tmp_path, monkeypatch)
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, _token = create_app(cfg, store, _I18nFakeBridge(), token="svg-tok")
+
+    with TestClient(app) as client:
+        svg_res = client.get("/static/loading.svg")
+        assert svg_res.status_code == 200
+        assert "image/svg+xml" in svg_res.headers["content-type"]
+        assert "@keyframes draw-zero" in svg_res.text
+        assert "prefers-reduced-motion" in svg_res.text
+
+        index_res = client.get("/?key=svg-tok")
+        assert index_res.status_code == 200
+        assert 'src="/static/loading.svg"' in index_res.text
+        assert 'class="snabel-loader-card"' in index_res.text
+
+    app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "snabelLoaderSvg" in app_js

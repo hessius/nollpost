@@ -5,7 +5,7 @@ Nollpost is distributed for macOS via **Homebrew** ([`Hessius/homebrew-tap`](htt
 When installed via Homebrew ([`Formula/nollpost.rb`](../Formula/nollpost.rb)):
 1. An isolated Python 3.13 virtualenv is created in `libexec`.
 2. Playwright Chromium is installed cleanly into `$(brew --prefix)/var/nollpost/ms-playwright` via `post_install_steps`, and `bin/nollpost` sets `PLAYWRIGHT_BROWSERS_PATH` automatically.
-3. The lightweight Swift/AppKit menu-bar launcher (`Nollpost.app`) is compiled natively for the Mac's CPU architecture, ad-hoc signed locally with `com.apple.security.automation.apple-events` entitlements (no Developer ID certificate needed), and installed in `$(brew --prefix nollpost)/Nollpost.app`.
+3. The lightweight Swift/AppKit menu-bar launcher (`Nollpost.app`) is compiled natively for the Mac's CPU architecture, ad-hoc signed locally with `com.apple.security.automation.apple-events` entitlements (no Developer ID certificate needed), and staged in `$(brew --prefix nollpost)/Nollpost.app` (because Homebrew's sandbox cannot write directly to `/Applications`).
 
 ---
 
@@ -15,12 +15,16 @@ When installed via Homebrew ([`Formula/nollpost.rb`](../Formula/nollpost.rb)):
 brew tap hessius/tap
 brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
+
+# Copy Nollpost.app into /Applications (fallback ~/Applications) and launch the menu-bar icon:
+nollpost app
 ```
 
-To launch the optional menu-bar wrapper:
+When upgrading later, run `nollpost app` (or `nollpost setup`) after `brew upgrade` to refresh `/Applications/Nollpost.app`:
 
 ```bash
-open "$(brew --prefix nollpost)/Nollpost.app"
+brew upgrade hessius/tap/nollpost
+nollpost app
 ```
 
 Both the **Review Board** web UI and the **`Nollpost.app` menu-bar launcher** check `Hessius/homebrew-tap` (6-hour cache, zero user/inbox telemetry; disable via `check_updates = false` in `config.toml`, **Settings**, or `NOLLPOST_NO_UPDATE_CHECK=1`) and surface a notice when a newer release is available:

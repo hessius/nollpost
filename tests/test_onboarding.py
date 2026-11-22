@@ -6,7 +6,14 @@ from pathlib import Path
 from nollpost import cli
 from nollpost.config import load_config
 from nollpost.models import AccountInfo
-from nollpost.onboarding import format_doctor_report, run_doctor, run_setup
+from nollpost.onboarding import (
+    format_doctor_report,
+    install_macos_app_bundle,
+    locate_macos_app_bundle,
+    run_app_command,
+    run_doctor,
+    run_setup,
+)
 
 
 class _StubBridge:
@@ -25,6 +32,7 @@ def _setup_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
     monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr("nollpost.onboarding.install_macos_app_bundle", lambda **_kw: None)
     return cfg_path
 
 
@@ -220,3 +228,95 @@ consulting_match_keywords = ["medtech"]
     assert reloaded.archive_map.get("Google") == "[Gmail]/All Mail"
     assert "Stale" not in reloaded.archive_map
     assert "Trash" not in cfg_path.read_text(encoding="utf-8")
+
+
+def _make_fake_app_bundle(root: Path) -> Path:
+    bundle = root / "Nollpost.app"
+    exe = bundle / "Contents" / "MacOS" / "Nollpost"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    (bundle / "Contents" / "Info.plist").write_text("<plist/>", encoding="utf-8")
+    return bundle
+
+
+def test_locate_and_install_macos_app_bundle_with_fallback_and_cli(tmp_path: Path, monkeypatch):
+    src = _make_fake_app_bundle(tmp_path / "cellar")
+    assert locate_macos_app_bundle(src) == src.resolve()
+
+    # Symlinked venv python inside custom Cellar libexec/bin/python should still find sibling Nollpost.app
+    target_py = tmp_path / "external-python" / "bin" / "python3.13"
+    target_py.parent.mkdir(parents=True, exist_ok=True)
+    target_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    venv_py = src.parent / "libexec" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True, exist_ok=True)
+    venv_py.symlink_to(target_py)
+    monkeypatch.delenv("NOLLPOST_APP_BUNDLE", raising=False)
+    monkeypatch.setattr("nollpost.onboarding.sys.executable", str(venv_py))
+    assert locate_macos_app_bundle() == src.resolve()
+
+    monkeypatch.setenv("NOLLPOST_APP_BUNDLE", str(src))
+    assert locate_macos_app_bundle() == src.resolve()
+
+    blocker_file = tmp_path / "not-a-dir"
+    blocker_file.write_text("x", encoding="utf-8")
+    fallback_dest = tmp_path / "UserApps" / "Nollpost.app"
+
+    installed = install_macos_app_bundle(
+        source_bundle=src,
+        destinations=[blocker_file / "Nollpost.app", fallback_dest],
+    )
+    assert installed == fallback_dest
+    assert (fallback_dest / "Contents" / "MacOS" / "Nollpost").is_file()
+
+    opened: list[Path] = []
+    out: list[str] = []
+    rc = run_app_command(
+        source_bundle=src,
+        destinations=[fallback_dest],
+        output_fn=out.append,
+        app_opener=lambda p: opened.append(p) or 0,
+    )
+    assert rc == 0
+    assert opened == [fallback_dest]
+    assert "Installed Nollpost.app" in "\n".join(out)
+
+    opened.clear()
+    rc_only = run_app_command(
+        install_only=True,
+        source_bundle=src,
+        destinations=[fallback_dest],
+        output_fn=out.append,
+        app_opener=lambda p: opened.append(p) or 0,
+    )
+    assert rc_only == 0
+    assert opened == []
+
+    # Verify CLI `nollpost app --install-only` delegates cleanly
+    called: list[tuple[bool, bool]] = []
+    monkeypatch.setattr(
+        cli,
+        "run_app_command",
+        lambda *, install_only=False, no_open=False: called.append((install_only, no_open)) or 0,
+    )
+    assert cli.main(["app", "--install-only"]) == 0
+    assert called == [(True, False)]
+
+    # Verify run_setup logs installed menu-bar bundle when app_installer succeeds
+    cfg_path = _setup_env(tmp_path, monkeypatch)
+    cfg = load_config(ensure_files=False)
+    bridge = _StubBridge([])
+    setup_out: list[str] = []
+    assert (
+        run_setup(
+            cfg,
+            bridge,
+            yes=True,
+            skip_browser=True,
+            output_fn=setup_out.append,
+            app_installer=lambda: fallback_dest,
+        )
+        == 0
+    )
+    assert cfg_path.exists()
+    assert f"Installed menu-bar app: {fallback_dest}" in "\n".join(setup_out)
