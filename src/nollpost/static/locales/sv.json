@@ -175,7 +175,7 @@
   "missed_snap.export_failed": "Export misslyckades: {message}",
   "guide.title": "Snabbguide för Nollpost",
   "guide.archive_title": "Endast arkivering (aldrig radering)",
-  "guide.archive_body": "Nollpost raderar aldrig några mejl. Arkivering markerar ett meddelande som läst och flyttar det till kontots konfigurerade arkivmapp.",
+  "guide.archive_body": "Nollpost raderar aldrig några mejl. Arkivering markerar meddelandet som läst och flyttar det till kontots arkivmapp. För Gmail kör standardläget i bakgrunden utan att öppna fönster i Mail genom att tillfälligt flytta via Papperskorgen (så Gmail tar bort Inkorgs-etiketten) och omedelbart flytta meddelandet vidare med Message-ID till All e-post (med återställning till Inkorgen om något går fel).",
   "guide.concepts_title": "Viktiga begrepp",
   "guide.item_tray": "<strong>Steg 2 Säkerhetsfack:</strong> Mejl som öppnas via <em>Läs + Öppna länk</em> eller <em>Läs + Visa faktura</em> stannar i Inkorgen och hamnar i Säkerhetsfacket tills du klickar på <em>Granska &amp; arkivera öppnade...</em>.",
   "guide.item_catchup": "<strong>Arkivrensning:</strong> Skannar dina arkivmappar efter återkommande nyhetsbrev och erbjuder <em>Endast avreg.</em> utan att ändra Inkorgen.",

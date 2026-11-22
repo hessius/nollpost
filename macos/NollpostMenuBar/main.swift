@@ -480,7 +480,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             Nollpost needs Automation access to control Mail.app (for Archive-only triage). Open System Settings -> Privacy & Security -> Automation and enable Mail under Nollpost.
 
-            Note: macOS Accessibility permission is only required if using Gmail's default "ui_menu" Archive strategy.
+            Note: macOS Accessibility permission is only required if you switch Gmail's strategy to "ui_menu" (the default "background" strategy needs Automation only).
             """
             alert.addButton(withTitle: "Open Automation Settings")
             alert.addButton(withTitle: "Continue Anyway")

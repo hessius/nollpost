@@ -175,7 +175,7 @@
   "missed_snap.export_failed": "Export failed: {message}",
   "guide.title": "Nollpost Quick Guide",
   "guide.archive_title": "Archive-Only Guarantee",
-  "guide.archive_body": "Nollpost never deletes emails. Archiving marks a message read and moves it to that account's configured Archive mailbox.",
+  "guide.archive_body": "Nollpost never deletes emails. Archiving marks a message read and moves it to that account's Archive folder. On Gmail, the default Background strategy runs silently without opening Mail windows by routing briefly through Gmail Trash to clear the Inbox label and immediately relocating each message by Message-ID to All Mail (rolling back to Inbox on error).",
   "guide.concepts_title": "Key Concepts",
   "guide.item_tray": "<strong>Step 2 Safety Tray:</strong> Items opened via <em>Read + Open link</em> or <em>Read + Show invoice</em> stay in your Mail.app Inbox and appear in the Safety Tray so you can finish reading before clicking <em>Review &amp; Sweep Opened...</em> to archive them.",
   "guide.item_catchup": "<strong>Archive Catch-Up:</strong> Scans your Archive folders for repeat promotional newsletters and offers <em>Unsub only</em> without modifying Inbox state.",

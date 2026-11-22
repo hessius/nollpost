@@ -2,7 +2,7 @@
 
 **Nollpost** (*Swedish: "zero mail"*) is a local multi-inbox triage board for **macOS Apple Mail**, featuring a strictly Archive-only workflow, deterministic RFC 8058 + Playwright unsubscribe runner, and persistent sender preference memory.
 
-> **Safety & Privacy First:** Nollpost runs entirely on your Mac (`127.0.0.1` with an ephemeral session token), sends zero emails to external LLMs/APIs, and **never deletes emails** or touches Trash/Junk folders. See [PRIVACY.md](PRIVACY.md) for details.
+> **Safety & Privacy First:** Nollpost runs entirely on your Mac (`127.0.0.1` with an ephemeral session token), sends zero emails to external LLMs/APIs, and **never deletes emails** or leaves messages in Trash/Junk folders (see [Gmail Archiving Strategies](#gmail-archiving-strategies) and [PRIVACY.md](PRIVACY.md)).
 
 ## Screenshots
 
@@ -53,7 +53,7 @@ uv tool install git+https://github.com/Hessius/nollpost.git
 # Guided onboarding (installs Playwright Chromium, confirms Archive folders, writes config.toml)
 nollpost setup
 
-# Verify macOS Automation/Accessibility permissions and Chromium readiness
+# Verify macOS Automation permissions and Chromium readiness
 nollpost doctor
 ```
 
