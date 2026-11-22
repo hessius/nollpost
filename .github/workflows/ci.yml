@@ -24,7 +24,7 @@ jobs:
           python-version: "3.13"
       - name: Install dependencies
         run: |
-          uv venv --python 3.13
+          uv venv --clear --python 3.13
           uv pip install --python .venv/bin/python -e ".[dev]"
       - name: Ruff lint
         run: .venv/bin/ruff check src/ tests/ scripts/
@@ -45,7 +45,7 @@ jobs:
           python-version: "3.13"
       - name: Install dependencies
         run: |
-          uv venv --python 3.13
+          uv venv --clear --python 3.13
           uv pip install --python .venv/bin/python -e ".[dev]"
       - name: Install Playwright Chromium (Linux)
         if: runner.os == 'Linux'
