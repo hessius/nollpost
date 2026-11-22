@@ -95,7 +95,7 @@ def test_kivra_pertinent_link_ranked_above_footer():
     </body></html>
     """
     raw = _build_html_email("Du har ett nytt meddelande i Kivra", "Kivra <noreply@notifications.kivra.com>", html)
-    info = extract_email_info(raw, "notifications.kivra.com")
+    info = extract_email_info(raw, "notifications.kivra.com", enabled_packs=["se"])
     assert info.pertinent_url == "https://app.kivra.com/inbox/msg/99"
 
 
@@ -151,7 +151,11 @@ def test_pertinent_url_prefers_meticulous_blog_patreon_post_topic_and_open_in_br
       <a href="https://track.pstmrk.it/3s/meticuloushome.com%3Fmtke%3D389/abc">meticuloushome.com</a>
     </body></html>
     """
-    m_info = extract_email_info(_build_html_email("MP4 is on the production line", "Meticulous <hello@meticuloushome.com>", meticulous_html), "meticuloushome.com")
+    m_info = extract_email_info(
+        _build_html_email("MP4 is on the production line", "Meticulous <hello@meticuloushome.com>", meticulous_html),
+        "meticuloushome.com",
+        wanted_domains=["meticuloushome.com"],
+    )
     assert m_info.pertinent_url is not None
     assert "blogs%2Fupdates" in m_info.pertinent_url
 
@@ -163,7 +167,11 @@ def test_pertinent_url_prefers_meticulous_blog_patreon_post_topic_and_open_in_br
       <a href="https://onlinelibrary.wiley.com/doi/10.1002/sd.71568">"The Sustainability of Robusta Coffee Under Global Change—A Review"</a>
     </body></html>
     """
-    d_info = extract_email_info(_build_html_email("The Drip Feed - Issue 3", "James Hoffmann <jameshoffmann@creator.patreon.com>", drip_html), "creator.patreon.com")
+    d_info = extract_email_info(
+        _build_html_email("The Drip Feed - Issue 3", "James Hoffmann <jameshoffmann@creator.patreon.com>", drip_html),
+        "creator.patreon.com",
+        wanted_domains=["patreon.com"],
+    )
     assert d_info.pertinent_url == "https://www.patreon.com/jameshoffmann/posts/drip-feed-issue-174364019?utm_source=post_link"
 
     # 3. Home Assistant Discourse: prefer Visit Topic (/t/...) over author profile (/u/magicus)
@@ -173,7 +181,11 @@ def test_pertinent_url_prefers_meticulous_blog_patreon_post_topic_and_open_in_br
       <a href="https://community.home-assistant.io/t/custom-swedish-wake-word/798623/4">Visit Topic</a>
     </body></html>
     """
-    h_info = extract_email_info(_build_html_email("[Home Assistant] Custom Swedish Wake Word", "User <noreply@community.home-assistant.io>", ha_html), "community.home-assistant.io")
+    h_info = extract_email_info(
+        _build_html_email("[Home Assistant] Custom Swedish Wake Word", "User <noreply@community.home-assistant.io>", ha_html),
+        "community.home-assistant.io",
+        wanted_domains=["home-assistant.io"],
+    )
     assert h_info.pertinent_url == "https://community.home-assistant.io/t/custom-swedish-wake-word/798623/4"
 
     # 4. Explicit "Open in browser" / "View in browser" links must NOT be stripped and should beat generic site links

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nollpost.packs import resolve_packs
+
 VALID_GMAIL_ARCHIVE_STRATEGIES = ("ui_menu", "tag_staging", "two_hop")
 
 DEFAULT_CONFIG_TOML = """# nollpost configuration
@@ -18,11 +20,6 @@ mark_read_on_archive = true
 max_inbox_messages = 500
 catchup_scan_limit = 200
 catchup_days_back = 14
-consulting_decline_boilerplate = \"\"\"Hi,
-
-Thank you for reaching out regarding this consultation. This topic falls outside my areas of expertise, so I will pass on this opportunity.
-
-Best regards\"\"\"
 
 [accounts]
 # Strategy for archiving Gmail messages via Apple Mail:
@@ -36,14 +33,23 @@ gmail_archive_strategy = "ui_menu"
 # iCloud = "Archive"
 # Google = "[Gmail]/All Mail"
 
+[rules]
+# Optional built-in regional/domain rule packs (e.g., ["se"] for Swedish billing/Kivra/delivery rules).
+enabled_packs = []
+
+[consulting]
+# Expert-network outreach classification is disabled by default.
+enabled = false
+networks = []
+match_keywords = []
+negative_keywords = []
+decline_boilerplate = \"\"\"Hi,
+
+Thank you for reaching out regarding this consultation. This topic falls outside my areas of expertise, so I will pass on this opportunity.
+
+Best regards\"\"\"
+
 [profile]
-# Optional expert-network domains (empty by default).
-consulting_networks = []
-
-consulting_match_keywords = []
-
-consulting_negative_keywords = []
-
 # Sender domains you always want surfaced under Updates (e.g., ["kickstarter.com", "patreon.com"]).
 wanted_domains = []
 
@@ -66,16 +72,7 @@ bill_keywords = [
     "due date",
     "payment reminder",
     "receipt",
-    "faktura",
-    "påminnelse",
-    "förfallodatum",
-    "betalning",
-    "utbetalning",
-    "inkasso",
-    "kivra",
-    "fortnox",
-    "bankgirot",
-    "skatteverket",
+    "billing",
 ]
 """
 
@@ -95,8 +92,10 @@ class TriageConfig:
     max_inbox_messages: int = 500
     catchup_scan_limit: int = 200
     catchup_days_back: int = 14
+    consulting_enabled: bool = False
     consulting_decline_boilerplate: str = ""
     gmail_archive_strategy: str = "ui_menu"
+    enabled_packs: list[str] = field(default_factory=list)
     archive_map: dict[str, str] = field(default_factory=dict)
     consulting_networks: list[str] = field(default_factory=list)
     consulting_match_keywords: list[str] = field(default_factory=list)
@@ -175,6 +174,7 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
             config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
 
     defaults = tomllib.loads(DEFAULT_CONFIG_TOML)
+    user_data: dict[str, Any] = {}
     if config_path.exists():
         user_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
         merged = _deep_merge(defaults, user_data)
@@ -183,6 +183,8 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
 
     user_sec = merged["user"]
     acct_sec = merged["accounts"]
+    rules_sec = merged["rules"]
+    consult_sec = merged["consulting"]
     prof_sec = merged["profile"]
 
     gmail_strategy = str(acct_sec.get("gmail_archive_strategy", "ui_menu")).strip().lower()
@@ -191,6 +193,26 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
             f"Invalid gmail_archive_strategy {gmail_strategy!r}; "
             f"expected one of {', '.join(VALID_GMAIL_ARCHIVE_STRATEGIES)}"
         )
+
+    enabled_packs = [p.name for p in resolve_packs(rules_sec.get("enabled_packs", []))]
+
+    # Support both [consulting] (v1.0) and legacy [profile].consulting_* / [user].consulting_decline_boilerplate
+    user_consult = user_data.get("consulting", {})
+    user_prof = user_data.get("profile", {})
+    networks = consult_sec.get("networks") or prof_sec.get("consulting_networks") or []
+    match_kw = consult_sec.get("match_keywords") or prof_sec.get("consulting_match_keywords") or []
+    neg_kw = consult_sec.get("negative_keywords") or prof_sec.get("consulting_negative_keywords") or []
+    boilerplate = str(
+        user_consult.get("decline_boilerplate")
+        or user_data.get("user", {}).get("consulting_decline_boilerplate")
+        or consult_sec["decline_boilerplate"]
+    )
+    if "enabled" in user_consult:
+        consulting_enabled = bool(user_consult["enabled"])
+    elif user_prof.get("consulting_networks") or user_consult.get("networks"):
+        consulting_enabled = True
+    else:
+        consulting_enabled = bool(consult_sec.get("enabled", False))
 
     return TriageConfig(
         config_path=config_path,
@@ -204,12 +226,14 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
         max_inbox_messages=int(user_sec["max_inbox_messages"]),
         catchup_scan_limit=int(user_sec["catchup_scan_limit"]),
         catchup_days_back=int(user_sec.get("catchup_days_back", 14)),
-        consulting_decline_boilerplate=str(user_sec["consulting_decline_boilerplate"]),
+        consulting_enabled=consulting_enabled,
+        consulting_decline_boilerplate=boilerplate,
         gmail_archive_strategy=gmail_strategy,
+        enabled_packs=enabled_packs,
         archive_map={str(k): str(v) for k, v in acct_sec.get("archive_map", {}).items()},
-        consulting_networks=[s.lower() for s in prof_sec["consulting_networks"]],
-        consulting_match_keywords=[s.lower() for s in prof_sec["consulting_match_keywords"]],
-        consulting_negative_keywords=[s.lower() for s in prof_sec["consulting_negative_keywords"]],
+        consulting_networks=[s.lower() for s in networks],
+        consulting_match_keywords=[s.lower() for s in match_kw],
+        consulting_negative_keywords=[s.lower() for s in neg_kw],
         wanted_domains=[s.lower() for s in prof_sec["wanted_domains"]],
         bot_senders=[s.lower() for s in prof_sec["bot_senders"]],
         transactional_domains=[s.lower() for s in prof_sec["transactional_domains"]],
