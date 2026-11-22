@@ -189,6 +189,20 @@ def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
+def _validate_toml_sections(merged: dict[str, Any]) -> None:
+    for sec in ("user", "accounts", "rules", "browser", "consulting", "profile"):
+        if not isinstance(merged.get(sec), dict):
+            raise ValueError(f"[{sec}] in config.toml must be a table")
+    if not isinstance(merged["accounts"].get("archive_map", {}), dict):
+        raise ValueError("[accounts.archive_map] in config.toml must be a table")
+
+
+def _require_str_list(name: str, val: Any, *, lowercase: bool = True) -> list[str]:
+    if not isinstance(val, list):
+        raise ValueError(f"{name} must be a list of strings")
+    return _normalize_str_list(val, lowercase=lowercase)
+
+
 def load_config(
     ensure_files: bool = True,
     *,
@@ -218,6 +232,7 @@ def load_config(
     else:
         merged = defaults
 
+    _validate_toml_sections(merged)
     user_sec = merged["user"]
     acct_sec = merged["accounts"]
     rules_sec = merged["rules"]
@@ -248,14 +263,15 @@ def load_config(
     enabled_packs = [p.name for p in resolve_packs(raw_packs)]
 
     # Support both [consulting] (v1.0) and legacy [profile].consulting_* / [user].consulting_decline_boilerplate
-    user_consult = user_data.get("consulting", {})
-    user_prof = user_data.get("profile", {})
+    user_consult = user_data.get("consulting") if isinstance(user_data.get("consulting"), dict) else {}
+    user_prof = user_data.get("profile") if isinstance(user_data.get("profile"), dict) else {}
+    user_user = user_data.get("user") if isinstance(user_data.get("user"), dict) else {}
     networks = consult_sec.get("networks") or prof_sec.get("consulting_networks") or []
     match_kw = consult_sec.get("match_keywords") or prof_sec.get("consulting_match_keywords") or []
     neg_kw = consult_sec.get("negative_keywords") or prof_sec.get("consulting_negative_keywords") or []
     boilerplate = str(
         user_consult.get("decline_boilerplate")
-        or user_data.get("user", {}).get("consulting_decline_boilerplate")
+        or user_user.get("consulting_decline_boilerplate")
         or consult_sec["decline_boilerplate"]
     )
     if "enabled" in user_consult:
@@ -423,7 +439,9 @@ def update_config_file(
 
     # Preserve effective legacy consulting fields when saving other sections
     resolved_existing = load_config(ensure_files=False, config_path=config_path)
-    merged["consulting"].setdefault("enabled", resolved_existing.consulting_enabled)
+    user_consult = user_data.get("consulting") if isinstance(user_data.get("consulting"), dict) else {}
+    if "enabled" not in user_consult:
+        merged["consulting"]["enabled"] = resolved_existing.consulting_enabled
     if not merged["consulting"].get("networks") and resolved_existing.consulting_networks:
         merged["consulting"]["networks"] = list(resolved_existing.consulting_networks)
     if not merged["consulting"].get("match_keywords") and resolved_existing.consulting_match_keywords:
@@ -479,7 +497,7 @@ def update_config_file(
     if "rules" in updates and isinstance(updates["rules"], dict):
         r = updates["rules"]
         if "enabled_packs" in r:
-            packs = _normalize_str_list(list(r["enabled_packs"]), lowercase=True)
+            packs = _require_str_list("enabled_packs", r["enabled_packs"], lowercase=True)
             merged["rules"]["enabled_packs"] = [p.name for p in resolve_packs(packs)]
 
     if "browser" in updates and isinstance(updates["browser"], dict):
@@ -497,11 +515,11 @@ def update_config_file(
         if "enabled" in c:
             merged["consulting"]["enabled"] = bool(c["enabled"])
         if "networks" in c:
-            merged["consulting"]["networks"] = _normalize_str_list(list(c["networks"]))
+            merged["consulting"]["networks"] = _require_str_list("consulting.networks", c["networks"])
         if "match_keywords" in c:
-            merged["consulting"]["match_keywords"] = _normalize_str_list(list(c["match_keywords"]))
+            merged["consulting"]["match_keywords"] = _require_str_list("consulting.match_keywords", c["match_keywords"])
         if "negative_keywords" in c:
-            merged["consulting"]["negative_keywords"] = _normalize_str_list(list(c["negative_keywords"]))
+            merged["consulting"]["negative_keywords"] = _require_str_list("consulting.negative_keywords", c["negative_keywords"])
         if "decline_boilerplate" in c:
             merged["consulting"]["decline_boilerplate"] = str(c["decline_boilerplate"])
 
@@ -509,7 +527,7 @@ def update_config_file(
         p = updates["profile"]
         for key in ("wanted_domains", "bot_senders", "transactional_domains", "bill_keywords"):
             if key in p:
-                merged["profile"][key] = _normalize_str_list(list(p[key]))
+                merged["profile"][key] = _require_str_list(f"profile.{key}", p[key])
 
     rendered = render_config_toml(merged)
     config_path.parent.mkdir(parents=True, exist_ok=True)

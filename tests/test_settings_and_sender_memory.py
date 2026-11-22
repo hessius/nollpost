@@ -234,3 +234,41 @@ def test_web_settings_live_reload_and_sender_memory_bulk_api(tmp_path: Path, mon
         assert 'id="sender-rules-btn"' in html
         assert "openSettingsModal" in app_js
         assert "openSenderRulesModal" in app_js
+
+        # Non-list payload for list fields must return HTTP 400, not 500
+        bad_list = client.put(
+            "/api/settings",
+            headers={"X-Triage-Key": token},
+            json={"rules": {"enabled_packs": "se"}},
+        )
+        assert bad_list.status_code == 400
+
+
+def test_legacy_consulting_preserved_and_chunked_sender_delete(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[profile]\nconsulting_networks = ["expertnet.example"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+
+    # Updating unrelated [user] setting must keep legacy consulting_enabled=True
+    reloaded = update_config_file(cfg_path, {"user": {"max_inbox_messages": 300}})
+    assert reloaded.consulting_enabled is True
+    assert reloaded.consulting_networks == ["expertnet.example"]
+
+    # Non-table TOML section raises ValueError cleanly
+    bad_path = tmp_path / "bad.toml"
+    bad_path.write_text('user = "oops"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a table"):
+        load_config(ensure_files=False, config_path=bad_path)
+
+    # Chunked delete handles >1000 keys without SQLite variable-limit error
+    store = TriageStore(tmp_path / "chunk.db")
+    keys = [f"s{i}@bulk.example" for i in range(1100)]
+    for k in keys[:5]:
+        store.record_sender_preference(k, "", "archive", True)
+    deleted = store.delete_sender_memory(keys)
+    assert deleted == 5

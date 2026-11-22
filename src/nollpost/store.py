@@ -335,17 +335,21 @@ class TriageStore:
         return out
 
     def delete_sender_memory(self, sender_keys: list[str]) -> int:
-        """Delete entries from sender_memory and return number of deleted rows."""
-        cleaned = [self.normalize_sender_key(k) for k in sender_keys if str(k).strip()]
+        """Delete entries from sender_memory in SQLite-safe chunks and return deleted row count."""
+        cleaned = list(dict.fromkeys(self.normalize_sender_key(k) for k in sender_keys if str(k).strip()))
         if not cleaned:
             return 0
+        total = 0
         with self._conn() as conn:
-            placeholders = ",".join("?" for _ in cleaned)
-            cur = conn.execute(
-                f"DELETE FROM sender_memory WHERE sender_key IN ({placeholders})",
-                cleaned,
-            )
-            return int(cur.rowcount)
+            for idx in range(0, len(cleaned), 500):
+                chunk = cleaned[idx : idx + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"DELETE FROM sender_memory WHERE sender_key IN ({placeholders})",
+                    chunk,
+                )
+                total += int(cur.rowcount)
+        return total
 
     def add_opened_tray_item(
         self,

@@ -1111,6 +1111,7 @@
             },
           };
           await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+          state.actionsByUid.clear();
           qs("snapshot-modal").classList.add("hidden");
           await loadState(true);
         } catch (saveErr) {
@@ -1149,7 +1150,17 @@
           qs("confirm-modal").classList.remove("hidden");
           state.confirmCallback = async () => {
             qs("confirm-modal").classList.add("hidden");
-            await runBulk();
+            try {
+              await runBulk();
+            } catch (bulkErr) {
+              const errStatus = qs("rules-status");
+              if (errStatus) {
+                errStatus.className = "modal-status err";
+                errStatus.textContent = bulkErr.message;
+              } else {
+                showError(bulkErr.message);
+              }
+            }
           };
         } else {
           try {
@@ -1339,46 +1350,8 @@
         await loadState(false);
         return;
       }
-      if (t.id === "rules-master-cb" && t instanceof HTMLInputElement) {
-        for (const row of state.rulesItems || []) {
-          if (t.checked) state.rulesSelectedKeys.add(row.sender_key);
-          else state.rulesSelectedKeys.delete(row.sender_key);
-        }
-        renderSenderRulesModalBody();
-        return;
-      }
-      if (t.classList.contains("rules-row-cb") && t instanceof HTMLInputElement && t.dataset.senderKey) {
-        if (t.checked) state.rulesSelectedKeys.add(t.dataset.senderKey);
-        else state.rulesSelectedKeys.delete(t.dataset.senderKey);
-        renderSenderRulesModalBody();
-        return;
-      }
-      if (t.classList.contains("rule-edit-select") && t instanceof HTMLSelectElement && t.value && t.dataset.ruleKey) {
-        const key = t.dataset.ruleKey;
-        const act = t.value;
-        t.value = "";
-        await applySenderMemoryUpdate([key], act);
-        const nextStatus = qs("rules-status");
-        if (nextStatus) {
-          nextStatus.className = "modal-status ok";
-          nextStatus.textContent = `Updated ${key}.`;
-        }
-        return;
-      }
     } catch (err) {
       showError(err.message);
-    }
-  });
-
-  document.addEventListener("input", async (ev) => {
-    const t = ev.target;
-    if (t instanceof HTMLInputElement && t.id === "rules-search-input") {
-      state.rulesSearch = t.value;
-      try {
-        await refreshSenderRulesData({ rowsOnly: true });
-      } catch (err) {
-        showError(err.message);
-      }
     }
   });
 
@@ -1431,13 +1404,13 @@
           if (t.checked) state.rulesSelectedKeys.add(row.sender_key);
           else state.rulesSelectedKeys.delete(row.sender_key);
         }
-        renderSenderRulesModalBody();
+        renderSenderRulesRowsOnly();
         return;
       }
       if (t.classList.contains("rules-row-cb") && t instanceof HTMLInputElement && t.dataset.senderKey) {
         if (t.checked) state.rulesSelectedKeys.add(t.dataset.senderKey);
         else state.rulesSelectedKeys.delete(t.dataset.senderKey);
-        renderSenderRulesModalBody();
+        renderSenderRulesRowsOnly();
         return;
       }
       if (t.classList.contains("rule-edit-select") && t instanceof HTMLSelectElement && t.value && t.dataset.ruleKey) {
