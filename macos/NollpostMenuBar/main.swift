@@ -243,6 +243,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateIdleAutoStopState() {
         let enabled = isIdleAutoStopEnabled()
         let mins = configuredIdleTimeoutMinutes()
+        idleModeMenuItem?.isEnabled = mins > 0
         idleModeMenuItem?.state = (enabled && mins > 0) ? .on : .off
         if mins <= 0 {
             idleModeMenuItem?.title = "Auto-Stop When Idle (Off in config.toml)"
@@ -252,6 +253,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleIdleAutoStop(_ sender: Any?) {
+        guard configuredIdleTimeoutMinutes() > 0 else { return }
         let currentlyEnabled = isIdleAutoStopEnabled()
         UserDefaults.standard.set(currentlyEnabled, forKey: idleDisabledKey)
         updateIdleAutoStopState()
@@ -567,29 +569,30 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         proc.terminationHandler = { [weak self] finished in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.serverProcess === finished else { return }
+                // Give any in-flight readabilityHandler chunk a brief moment to enqueue onto MainActor
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard self.serverProcess === finished else { return }
                 self.outputPipe?.fileHandleForReading.readabilityHandler = nil
                 self.outputPipe = nil
                 self.readyCheckTimer?.invalidate()
                 self.readyCheckTimer = nil
-                if self.serverProcess === finished {
-                    self.serverProcess = nil
-                    if finished.terminationStatus != 0 && finished.terminationReason != .uncaughtSignal {
-                        let tail = self.recentLogLines.suffix(6).joined(separator: "\n")
-                        self.serverState = .failed("exit \(finished.terminationStatus)")
-                        self.showAlert(
-                            style: .critical,
-                            title: "Nollpost Server Exited Unexpectedly",
-                            message: tail.isEmpty ? "Check menubar.log for details." : tail
-                        )
-                    } else if case .failed = self.serverState {
-                        // Keep failure status visible
-                    } else if self.idleAutoStopped || self.recentLogLines.contains(where: { $0.contains("Stopping Nollpost Review Board") && $0.contains("(idle mode)") }) {
-                        self.idleAutoStopped = false
-                        self.serverState = .idleStopped
-                    } else {
-                        self.serverState = .stopped
-                    }
+                self.serverProcess = nil
+                if finished.terminationStatus != 0 && finished.terminationReason != .uncaughtSignal {
+                    let tail = self.recentLogLines.suffix(6).joined(separator: "\n")
+                    self.serverState = .failed("exit \(finished.terminationStatus)")
+                    self.showAlert(
+                        style: .critical,
+                        title: "Nollpost Server Exited Unexpectedly",
+                        message: tail.isEmpty ? "Check menubar.log for details." : tail
+                    )
+                } else if case .failed = self.serverState {
+                    // Keep failure status visible
+                } else if self.idleAutoStopped || self.recentLogLines.contains(where: { $0.contains("Stopping Nollpost Review Board") && $0.contains("(idle mode)") }) {
+                    self.idleAutoStopped = false
+                    self.serverState = .idleStopped
+                } else {
+                    self.serverState = .stopped
                 }
             }
         }

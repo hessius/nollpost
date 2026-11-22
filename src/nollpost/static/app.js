@@ -1338,7 +1338,10 @@
               max_inbox_messages: Number(qs("cfg-max-inbox")?.value || 500),
               catchup_scan_limit: Number(qs("cfg-catchup-limit")?.value || 200),
               catchup_days_back: Number(qs("cfg-catchup-days")?.value || 14),
-              idle_timeout_minutes: Number(qs("cfg-idle-timeout")?.value ?? 45),
+              idle_timeout_minutes: (() => {
+                const raw = qs("cfg-idle-timeout")?.value?.trim() ?? "";
+                return raw === "" ? 45 : Number(raw);
+              })(),
             },
             accounts: {
               gmail_archive_strategy: qs("cfg-gmail-strategy")?.value || "ui_menu",
