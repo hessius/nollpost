@@ -391,8 +391,8 @@
   }
 
   function render() {
-    renderHeader();
     renderTabs();
+    renderHeader();
     renderTable();
   }
 
