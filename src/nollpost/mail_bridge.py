@@ -91,7 +91,7 @@ GMAIL_UI_ARCHIVE_ENABLED = True
 def is_gmail_all_mail_destination(mailbox_name: str) -> bool:
     """Return True for Gmail All Mail special-use targets requiring two-hop \\Inbox removal."""
     low = mailbox_name.strip().lower()
-    return low.startswith("[gmail]/all") or low in ("all e-post", "all mail", "alla brev")
+    return low.startswith("[gmail]/all") or low in ("all e-post", "all mail", "alla brev", "[gmail]/arkiv")
 
 _AS_HELPERS = """
 on encodeField(val)
@@ -754,11 +754,12 @@ end extractMessageLine
         clean_ids: list[str],
         mark_read: bool = True,
     ) -> list[str]:
-        """Archive Gmail messages exactly like manual Archive: open the message window and click Mail's
-        Archive menu item (needs Accessibility permission). Never deletes or touches Trash.
+        """Archive Gmail messages via Mail.app's native Archive action (toolbar button first,
+        validated Archive menu item fallback). Never deletes or touches Trash.
 
-        Safety: only clicks Archive when the front window title matches the target message subject, and
-        verifies afterwards that exactly the target id left the source mailbox; any surprise stops the batch.
+        Safety: opens the specific target message id, verifies the focused/main window title
+        matches the target message subject before clicking Archive, and verifies afterwards that
+        only the targeted id left the source mailbox.
         """
         before = self.list_mailbox_ids(account, from_mailbox)
         if before is None:
@@ -774,13 +775,15 @@ end extractMessageLine
 
         safe_acct = escape_applescript(account)
         box_ref = mailbox_ref_applescript(from_mailbox, account_var="targetAccount", out_var="targetMailbox")
-        menu_names = '{"Archive", "Arkivera", "Archivieren", "Archiver", "Archivar"}'
+        cands = '{"Archive", "Arkivera", "Archivieren", "Archiver", "Archivar"}'
         moved: list[str] = []
         for mid in targets:
             script = (
                 _AS_HELPERS
+                + f"set cands to {cands}\n"
+                + 'set subj to ""\n'
+                + 'set subjPrefix to ""\n'
                 + 'tell application "Mail"\n'
-                + "  activate\n"
                 + f'  set targetAccount to account "{safe_acct}"\n'
                 + f"  {box_ref}\n"
                 + f"  set tgt to (every message of targetMailbox whose id is {int(mid)})\n"
@@ -788,26 +791,152 @@ end extractMessageLine
                 + "  set subj to subject of item 1 of tgt\n"
                 + '  if subj is missing value then set subj to ""\n'
                 + '  if subj is "" then return "ABORT: empty subject unsafe for UI archive"\n'
+                + "  if (length of subj) > 60 then\n"
+                + "    set subjPrefix to text 1 thru 60 of subj\n"
+                + "  else\n"
+                + "    set subjPrefix to subj\n"
+                + "  end if\n"
                 + "  open item 1 of tgt\n"
-                + "  delay 1.5\n"
-                + "  set wname to name of front window\n"
                 + "end tell\n"
-                + 'if not (wname starts with subj) then return "ABORT: front window mismatch"\n'
+                + "set didActivate to false\n"
+                + 'set prevApp to ""\n'
+                + "set targetWin to missing value\n"
                 + 'tell application "System Events"\n'
                 + '  tell process "Mail"\n'
-                + f"    set cands to {menu_names}\n"
+                + "    -- Try locating the opened window without stealing focus first\n"
+                + "    repeat 8 times\n"
+                + "      delay 0.1\n"
+                + "      repeat with attrName in {\"AXFocusedWindow\", \"AXMainWindow\"}\n"
+                + "        try\n"
+                + "          set candWin to value of attribute (attrName as string)\n"
+                + '          set candTitle to value of attribute "AXTitle" of candWin\n'
+                + "          if candTitle starts with subjPrefix then\n"
+                + "            set targetWin to candWin\n"
+                + "            exit repeat\n"
+                + "          end if\n"
+                + "        end try\n"
+                + "      end repeat\n"
+                + "      if targetWin is not missing value then exit repeat\n"
+                + "    end repeat\n"
+                + "    if targetWin is missing value then\n"
+                + "      try\n"
+                + "        tell application \"System Events\" to set prevApp to name of first application process whose frontmost is true\n"
+                + "      end try\n"
+                + "      set didActivate to true\n"
+                + '      tell application "Mail" to activate\n'
+                + "      repeat 20 times\n"
+                + "        delay 0.1\n"
+                + "        repeat with attrName in {\"AXFocusedWindow\", \"AXMainWindow\"}\n"
+                + "          try\n"
+                + "            set candWin to value of attribute (attrName as string)\n"
+                + '            set candTitle to value of attribute "AXTitle" of candWin\n'
+                + "            if candTitle starts with subjPrefix then\n"
+                + "              set targetWin to candWin\n"
+                + "              exit repeat\n"
+                + "            end if\n"
+                + "          end try\n"
+                + "        end repeat\n"
+                + "        if targetWin is not missing value then exit repeat\n"
+                + "      end repeat\n"
+                + "    end if\n"
+                + "    if targetWin is missing value then\n"
+                + "      try\n"
+                + '        tell application "Mail" to if (name of front window) starts with subjPrefix then close front window\n'
+                + "      end try\n"
+                + '      if didActivate and prevApp is not "" and prevApp is not "Mail" then\n'
+                + "        try\n"
+                + '          tell application "System Events" to set frontmost of process prevApp to true\n'
+                + "        end try\n"
+                + "      end if\n"
+                + '      return "ABORT: front window mismatch"\n'
+                + "    end if\n"
+                + "    -- Pass 1: Click native toolbar Archive button directly (avoids lazy NSMenu validation)\n"
+                + "    try\n"
+                + "      set tb to toolbar 1 of targetWin\n"
+                + "      repeat with b in UI elements of tb\n"
+                + "        try\n"
+                + '          if (role of b) is "AXButton" then\n'
+                + '            set bDesc to ""\n'
+                + '            set bTitle to ""\n'
+                + "            try\n"
+                + "              set bDesc to (description of b as string)\n"
+                + "            end try\n"
+                + "            try\n"
+                + "              set bTitle to (title of b as string)\n"
+                + "            end try\n"
+                + "            if ((bDesc is in cands) or (bTitle is in cands)) and (enabled of b) then\n"
+                + "              click b\n"
+                + '              if didActivate and prevApp is not "" and prevApp is not "Mail" then\n'
+                + "                try\n"
+                + '                  tell application "System Events" to set frontmost of process prevApp to true\n'
+                + "                end try\n"
+                + "              end if\n"
+                + '              return "ok"\n'
+                + "            end if\n"
+                + '          else if (role of b) is "AXGroup" then\n'
+                + "            repeat with gb in UI elements of b\n"
+                + "              try\n"
+                + '                if (role of gb) is "AXButton" then\n'
+                + '                  set gbDesc to ""\n'
+                + '                  set gbTitle to ""\n'
+                + "                  try\n"
+                + "                    set gbDesc to (description of gb as string)\n"
+                + "                  end try\n"
+                + "                  try\n"
+                + "                    set gbTitle to (title of gb as string)\n"
+                + "                  end try\n"
+                + "                  if ((gbDesc is in cands) or (gbTitle is in cands)) and (enabled of gb) then\n"
+                + "                    click gb\n"
+                + '                    if didActivate and prevApp is not "" and prevApp is not "Mail" then\n'
+                + "                      try\n"
+                + '                        tell application "System Events" to set frontmost of process prevApp to true\n'
+                + "                      end try\n"
+                + "                    end if\n"
+                + '                    return "ok"\n'
+                + "                  end if\n"
+                + "                end if\n"
+                + "              end try\n"
+                + "            end repeat\n"
+                + "          end if\n"
+                + "        end try\n"
+                + "      end repeat\n"
+                + "    end try\n"
+                + "    -- Pass 2: Fallback to Message menu (forcing NSMenuDelegate validation via menu bar click)\n"
+                + "    if not didActivate then\n"
+                + "      try\n"
+                + '        tell application "System Events" to set prevApp to name of first application process whose frontmost is true\n'
+                + "      end try\n"
+                + "      set didActivate to true\n"
+                + '      tell application "Mail" to activate\n'
+                + "      delay 0.2\n"
+                + "    end if\n"
                 + "    repeat with mbi in menu bar items of menu bar 1\n"
                 + "      try\n"
                 + "        repeat with mi in menu items of menu 1 of mbi\n"
                 + "          try\n"
                 + "            if (name of mi) is in cands then\n"
                 + "              if not (enabled of mi) then\n"
-                + '                try\n'
-                + '                  tell application "Mail" to if (name of front window) starts with subj then close front window\n'
-                + '                end try\n'
+                + "                click mbi\n"
+                + "                delay 0.15\n"
+                + "              end if\n"
+                + "              if not (enabled of mi) then\n"
+                + "                key code 53\n"
+                + "                try\n"
+                + '                  tell application "Mail" to if (name of front window) starts with subjPrefix then close front window\n'
+                + "                end try\n"
+                + '                if prevApp is not "" and prevApp is not "Mail" then\n'
+                + "                  try\n"
+                + '                    tell application "System Events" to set frontmost of process prevApp to true\n'
+                + "                  end try\n"
+                + "                end if\n"
                 + '                return "ABORT: archive menu disabled"\n'
                 + "              end if\n"
                 + "              click mi\n"
+                + '              if prevApp is not "" and prevApp is not "Mail" then\n'
+                + "                try\n"
+                + '                  tell application "System Events" to set frontmost of process prevApp to true\n'
+                + "                end try\n"
+                + "              end if\n"
                 + '              return "ok"\n'
                 + "            end if\n"
                 + "          end try\n"
@@ -817,8 +946,13 @@ end extractMessageLine
                 + "  end tell\n"
                 + "end tell\n"
                 + "try\n"
-                + '  tell application "Mail" to if (name of front window) starts with subj then close front window\n'
+                + '  tell application "Mail" to if (name of front window) starts with subjPrefix then close front window\n'
                 + "end try\n"
+                + 'if didActivate and prevApp is not "" and prevApp is not "Mail" then\n'
+                + "  try\n"
+                + '    tell application "System Events" to set frontmost of process prevApp to true\n'
+                + "  end try\n"
+                + "end if\n"
                 + 'return "ABORT: archive menu item not found"\n'
             )
             try:
@@ -830,8 +964,8 @@ end extractMessageLine
 
             left: set[str] = set()
             after: Optional[set[str]] = before
-            for _attempt in range(4):
-                time.sleep(2.0)
+            for delay_s in (0.6, 1.0, 1.5, 2.0):
+                time.sleep(delay_s)
                 after = self.list_mailbox_ids(account, from_mailbox)
                 if after is None:
                     break

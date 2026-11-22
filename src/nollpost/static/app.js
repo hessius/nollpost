@@ -902,7 +902,11 @@
     const p = cfg.profile || {};
 
     const stratOpts = (a.valid_gmail_strategies || ["ui_menu", "two_hop", "tag_staging"])
-      .map((s) => `<option value="${escapeHtml(s)}" ${a.gmail_archive_strategy === s ? "selected" : ""}>${escapeHtml(s)}</option>`)
+      .map((s) => {
+        const key = `settings.gmail_strategy_${s}`;
+        const label = Object.prototype.hasOwnProperty.call(state.messages || {}, key) ? t(key) : s;
+        return `<option value="${escapeHtml(s)}" ${a.gmail_archive_strategy === s ? "selected" : ""}>${escapeHtml(label)}</option>`;
+      })
       .join("");
     const packChecks = (r.available_packs || [])
       .map((pk) => {
