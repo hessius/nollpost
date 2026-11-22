@@ -14,18 +14,36 @@
 
 ## Installation
 
+### Recommended (`uv` or `pipx`)
+
+```bash
+uv tool install git+https://github.com/Hessius/nollpost.git
+# or: pipx install git+https://github.com/Hessius/nollpost.git
+
+# Guided onboarding (installs Playwright Chromium, confirms Archive folders, writes config.toml)
+nollpost setup
+
+# Verify macOS Automation/Accessibility permissions and Chromium readiness
+nollpost doctor
+```
+
+### From Source (Contributors)
+
 ```bash
 git clone https://github.com/Hessius/nollpost.git
 cd nollpost
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
-playwright install chromium
+pip install -e ".[dev]"
+nollpost setup
 ```
 
 ## Quick Start
 
 ```bash
+# Verify environment & Mail.app permissions
+nollpost doctor
+
 # Scan all configured Apple Mail inboxes and print a terminal summary
 nollpost scan
 

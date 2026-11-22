@@ -12,6 +12,7 @@ import uvicorn
 
 from nollpost.config import load_config
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
+from nollpost.onboarding import format_doctor_report, run_doctor, run_setup
 from nollpost.scanner import run_scan
 from nollpost.store import TriageStore
 from nollpost.web import create_app
@@ -80,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     mark_p.add_argument("id", type=int)
     mark_p.add_argument("--no-archive", action="store_true", help="Do not archive the message from INBOX")
     mark_p.add_argument("--note", default="Marked as unsubscribed by user")
+
+    doctor_p = sub.add_parser("doctor", help="Run preflight checks for macOS, Mail.app, permissions, and Chromium")
+    doctor_p.add_argument("--json", action="store_true", dest="as_json")
+
+    setup_p = sub.add_parser("setup", help="Interactive first-run onboarding wizard")
+    setup_p.add_argument("--yes", action="store_true", help="Accept defaults without interactive prompts")
+    setup_p.add_argument("--skip-browser", action="store_true", help="Skip Playwright Chromium install check")
 
     args = parser.parse_args(argv)
     config = load_config(ensure_files=True)
@@ -164,6 +172,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"Marked missed-unsub #{args.id} ({entry['sender']}) as unsubscribed{archived_msg}")
         return 0
+
+    if args.command == "doctor":
+        ok, checks = run_doctor(config, bridge)
+        if args.as_json:
+            print(json.dumps({"ok": ok, "checks": [c.to_dict() for c in checks]}, ensure_ascii=False, indent=2))
+        else:
+            print(format_doctor_report(checks))
+        return 0 if ok else 1
+
+    if args.command == "setup":
+        return run_setup(config, bridge, yes=args.yes, skip_browser=args.skip_browser)
 
     if args.command == "serve":
         port = args.port or _find_free_port("127.0.0.1")
