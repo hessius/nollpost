@@ -7,134 +7,22 @@ import re
 import socket
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from playwright.async_api import Page, Route, async_playwright
 
 from nollpost.models import PlaywrightOutcome
+from nollpost.patterns_loader import UnsubPatterns, load_unsub_patterns
 
-CAPTCHA_PATTERNS = re.compile(
-    r"(?:g-recaptcha|h-captcha|hcaptcha\.com|recaptcha/api|challenges\.cloudflare\.com/turnstile|cf-turnstile|verify\s+you\s+are\s+human|are\s+you\s+human|jag\s+är\s+inte\s+en\s+robot|i\s+am\s+not\s+a\s+robot)",
-    re.I,
-)
-
-SUCCESS_TEXT_RE = re.compile(
-    r"(?:"
-    # English
-    r"you(?:'ve|\s+have|\s+are)\s+(?:now\s+)?(?:successfully\s+)?(?:been\s+)?(?:unsubscribed|opted\s+out|removed)|"
-    r"successfully\s+(?:been\s+)?(?:unsubscribed|opted\s+out|removed|updated)|"
-    r"unsubscription\s+(?:is\s+)?(?:confirmed|complete[d]?|successful)|"
-    r"removed\s+from\s+(?:our|this|the|all)\s+(?:mailing\s+|email\s+)?lists?|"
-    r"no\s+longer\s+receive|"
-    r"will\s+not\s+receive\s+any\s+more|"
-    r"(?:email\s+|communication\s+|subscription\s+|notification\s+)?preferences\s+(?:have\s+been\s+|are\s+)?(?:saved|updated|changed)|"
-    r"your\s+(?:changes|choices|settings)\s+have\s+been\s+saved|"
-    # Swedish
-    r"du\s+(?:är|har)\s+(?:nu\s+)?(?:blivit\s+)?(?:avregistrerad|avprenumererad|avprenumererat|borttagen)|"
-    r"(?:din\s+)?(?:avprenumeration|avregistrering)\s+(?:är\s+|har\s+)?(?:nu\s+)?(?:bekräftad|genomförd|genomförts|klar|sparad|registrerad)|"
-    r"(?:du\s+)?(?:avslutar|har\s+avslutat)\s+(?:din\s+)?prenumeration(?:en)?|"
-    r"du\s+kommer\s+inte\s+längre\s+(?:att\s+)?(?:få|ta\s+emot|motta)|"
-    r"vi\s+har\s+(?:nu\s+)?(?:tagit\s+bort\s+din|avregistrerat\s+dig|sparat\s+dina\s+val|uppdaterat\s+dina)|"
-    r"(?:tack[!,]?\s*)?(?:dina\s+|din\s+|ditt\s+)?(?:inställningar|preferenser|val|ändringar|prenumeration(?:er)?)\s+(?:är\s+|har\s+)?(?:nu\s+)?(?:sparade|sparat|sparats|uppdaterade|uppdaterad|uppdaterats|ändrade|ändrats)|"
-    r"alla\s+(?:e-?postutskick|prenumerationer)\s+(?:är\s+|har\s+)?(?:nu\s+)?(?:avregistrerade|avslutade|avbrutna)|"
-    # Nordic / European (DA, NO, DE, FR, ES, FI)
-    r"du\s+er\s+(?:nu\s+|nå\s+)?(?:afmeldt|avmeldt)|"
-    r"(?:din\s+)?(?:afmelding|avmelding)\s+er\s+(?:bekræftet|registrert|gjennomført)|"
-    r"(?:dine\s+|din\s+)?(?:præferencer|preferanser|indstillinger|innstillinger|abonnement(?:er)?)\s+(?:er\s+|har\s+blitt\s+)?(?:nu\s+|nå\s+)?(?:gemt|opdateret|lagret|oppdatert)|"
-    r"(?:erfolgreich|wurden)\s+abgemeldet|"
-    r"abmeldung\s+(?:war\s+)?(?:erfolgreich|bestätigt)|"
-    r"(?:ihre\s+)?(?:einstellungen|präferenzen)\s+wurden\s+(?:gespeichert|aktualisiert)|"
-    r"vous\s+(?:êtes|avez\s+été)\s+désabonné|"
-    r"désabonnement\s+(?:confirmé|pris\s+en\s+compte)|"
-    r"(?:vos\s+)?préférences\s+ont\s+été\s+(?:enregistrées|mises\s+à\s+jour)|"
-    r"te\s+has\s+dado\s+de\s+baja|"
-    r"baja\s+(?:ha\s+sido\s+)?confirmada|"
-    r"(?:tus\s+|sus\s+)?preferencias\s+(?:se\s+han|han\s+sido)\s+(?:guardadas|actualizadas)|"
-    r"tilaus\s+on\s+peruutettu|"
-    # Consulting declines
-    r"project\s+declined|"
-    r"thank\s+you\s+for\s+(?:your\s+response|letting\s+us\s+know)|"
-    r"you\s+have\s+declined"
-    r")",
-    re.I,
-)
-
-RESUBSCRIBE_BUTTON_RE = re.compile(
-    r"^\s*[+↺]?\s*(?:resubscribe|re-subscribe|subscribe\s+again|prenumerera\s+igen|återaktivera(?:\s+prenumeration(?:en)?)?)\s*$",
-    re.I,
-)
-
-UNSUB_BUTTON_PATTERNS = [
-    # Tier 1: Explicit "unsubscribe / opt out from ALL" buttons (e.g. "Avregistrera alla e-postutskick")
-    r"unsubscribe\s+(?:me\s+)?(?:from\s+)?all",
-    r"opt[\s-]?out\s+(?:of\s+)?all",
-    r"avprenumerera\s+(?:mig\s+)?(?:från\s+)?(?:alla|allt)",
-    r"avregistrera\s+(?:mig\s+)?(?:från\s+)?(?:alla|allt)",
-    r"avbryt\s+alla\s+prenumerationer",
-    r"sluta\s+(?:få|ta\s+emot)\s+alla",
-    r"afmeld\s+(?:mig\s+)?alle",
-    r"avmeld\s+(?:meg\s+)?alle",
-    r"(?:von\s+allen|alle)\s+abmelden",
-    r"(?:me\s+)?désabonner\s+de\s+tout|tout\s+désabonner",
-    r"dar(?:me)?\s+de\s+baja\s+de\s+todo",
-    # Tier 2: Explicit confirm / unsubscribe actions
-    r"bekräfta\s+(?:avprenumeration|avregistrering)",
-    r"confirm\s+(?:unsubscription|unsubscribe|opt[\s-]?out)",
-    r"avprenumerera",
-    r"avregistrera",
-    r"avsluta\s+(?:min\s+|din\s+)?prenumeration(?:en)?",
-    r"sluta\s+prenumerera",
-    r"ja,?\s+(?:avregistrera|avprenumerera|ta\s+bort|avsluta)",
-    r"yes,?\s+(?:unsubscribe|remove|opt[\s-]?out)",
-    r"unsubscribe",
-    r"opt[\s-]?out",
-    r"afmeld",
-    r"avmeld",
-    r"abmelden",
-    r"(?:me\s+|se\s+)?désabonner",
-    r"dar(?:me|se)?\s+de\s+baja",
-    r"peruuta(?:\s+tilaus)?",
-    # Tier 3: Save / update preference center choices (e.g. "Spara val", "Uppdatera")
-    r"spara\s+(?:mina\s+)?(?:val|inställningar|ändringar)",
-    r"save\s+(?:my\s+)?(?:preferences|changes|settings|choices)",
-    r"update\s+(?:my\s+)?(?:preferences|subscription|settings)",
-    r"uppdatera(?:\s+(?:inställningar|prenumeration(?:er)?|val))?",
-    r"bekräfta",
-    r"spara",
-    r"confirm",
-    r"update",
-    r"submit",
-    r"skicka",
-    r"verkställ",
-]
-
-OPTOUT_CHOICE_PATTERNS = [
-    r"unsubscribe\s+(?:me\s+)?(?:from\s+)?all",
-    r"opt[\s-]?out\s+(?:of\s+)?all",
-    r"avprenumerera",
-    r"avregistrera",
-    r"avbryt\s+alla",
-    r"vill\s+inte\s+längre\s+(?:ta\s+emot|ha|få)",
-    r"inga\s+fler\s+(?:utskick|mejl|publikationer|nyhetsbrev)",
-    r"no\s+longer\s+(?:wish|want)\s+to\s+receive",
-    r"do\s+not\s+send\s+me",
-    r"stop\s+receiving\s+all",
-    r"remove\s+me\s+from\s+all",
-    r"afmeld\s+alle|avmeld\s+alle|alle\s+abmelden|tout\s+désabonner",
-]
-
-DECLINE_BUTTON_PATTERNS = [
-    r"decline(?:\s+(?:now|project|consultation))?",
-    r"not\s+my\s+area",
-    r"outside\s+my\s+expertise",
-    r"not\s+relevant",
-    r"not\s+interested",
-    r"avböj",
-    r"confirm",
-    r"submit",
-]
+_DEFAULT_PATTERNS = load_unsub_patterns()
+CAPTCHA_PATTERNS = _DEFAULT_PATTERNS.captcha_re
+SUCCESS_TEXT_RE = _DEFAULT_PATTERNS.success_text_re
+RESUBSCRIBE_BUTTON_RE = _DEFAULT_PATTERNS.resubscribe_button_re
+UNSUB_BUTTON_PATTERNS = list(_DEFAULT_PATTERNS.unsub_button_patterns)
+OPTOUT_CHOICE_PATTERNS = list(_DEFAULT_PATTERNS.optout_choice_patterns)
+DECLINE_BUTTON_PATTERNS = list(_DEFAULT_PATTERNS.decline_button_patterns)
 
 _BLOCKED_HOSTNAMES = frozenset({"localhost", "localhost.localdomain", "metadata.google.internal"})
 
@@ -202,8 +90,10 @@ async def try_rfc8058_one_click(
     url: str,
     timeout: float = 15.0,
     allow_private: bool = False,
+    patterns: UnsubPatterns | None = None,
 ) -> PlaywrightOutcome:
     """Attempt RFC 8058 one-click POST unsubscription with per-hop SSRF validation."""
+    pats = patterns or _DEFAULT_PATTERNS
     if not is_public_http_url(url, allow_private=allow_private):
         return PlaywrightOutcome(status="failed", final_url=url, detail="Blocked non-public or invalid URL")
 
@@ -231,14 +121,14 @@ async def try_rfc8058_one_click(
                     continue
 
                 body = resp.text or ""
-                if CAPTCHA_PATTERNS.search(body):
+                if pats.captcha_re.search(body):
                     return PlaywrightOutcome(
                         status="blocked_captcha",
                         final_url=str(resp.url),
                         detail="RFC 8058 response returned a CAPTCHA/bot gate",
                     )
                 if 200 <= resp.status_code < 300:
-                    if "<form" in body.lower() and re.search(r"<button|<input[^>]+submit", body, re.I) and not SUCCESS_TEXT_RE.search(body):
+                    if "<form" in body.lower() and re.search(r"<button|<input[^>]+submit", body, re.I) and not pats.success_text_re.search(body):
                         return PlaywrightOutcome(
                             status="failed",
                             final_url=str(resp.url),
@@ -267,13 +157,13 @@ async def try_rfc8058_one_click(
         )
 
 
-async def _detect_captcha(page: Page) -> bool:
+async def _detect_captcha(page: Page, captcha_re: re.Pattern[str] = CAPTCHA_PATTERNS) -> bool:
     for frame in page.frames:
-        if CAPTCHA_PATTERNS.search(frame.url or ""):
+        if captcha_re.search(frame.url or ""):
             return True
         try:
             html = await frame.content()
-            if CAPTCHA_PATTERNS.search(html):
+            if captcha_re.search(html):
                 return True
         except Exception:
             continue
@@ -317,9 +207,11 @@ async def _fill_email_if_needed(page: Page, user_email: str) -> bool:
     return filled
 
 
-async def _uncheck_marketing_checkboxes(page: Page) -> int:
+async def _uncheck_marketing_checkboxes(
+    page: Page,
+    optout_guard_re: re.Pattern[str] = _DEFAULT_PATTERNS.optout_guard_re,
+) -> int:
     changed = 0
-    optout_guard = re.compile("|".join(OPTOUT_CHOICE_PATTERNS) + r"|all\s+email", re.I)
     for frame in page.frames:
         boxes = frame.locator("input[type='checkbox']")
         try:
@@ -336,7 +228,7 @@ async def _uncheck_marketing_checkboxes(page: Page) -> int:
                             return (lbl ? lbl.innerText : el.name || el.value || '').toLowerCase();
                         }"""
                     )
-                    if optout_guard.search(label_txt):
+                    if optout_guard_re.search(label_txt):
                         continue
                     await loc.uncheck()
                     changed += 1
@@ -357,9 +249,9 @@ async def _mark_optout_container(loc) -> None:
         pass
 
 
-async def _check_optout_radios_or_boxes(page: Page, patterns: list[str]) -> bool:
+async def _check_optout_radios_or_boxes(page: Page, patterns: Sequence[str] | re.Pattern[str]) -> bool:
     """Select radio/checkbox options matching opt-out/decline reasons across all frames."""
-    combined_re = re.compile("|".join(patterns), re.I)
+    combined_re = patterns if isinstance(patterns, re.Pattern) else re.compile("|".join(patterns), re.I)
 
     for frame in page.frames:
         labels = frame.locator("label")
@@ -415,7 +307,10 @@ async def _check_optout_radios_or_boxes(page: Page, patterns: list[str]) -> bool
     return False
 
 
-async def _has_resubscribe_button(page: Page) -> bool:
+async def _has_resubscribe_button(
+    page: Page,
+    resubscribe_re: re.Pattern[str] = RESUBSCRIBE_BUTTON_RE,
+) -> bool:
     selectors = "button, input[type='submit'], input[type='button'], [role='button'], a"
     for frame in page.frames:
         candidates = frame.locator(selectors)
@@ -434,7 +329,7 @@ async def _has_resubscribe_button(page: Page) -> bool:
                     if tag == "input"
                     else (await loc.inner_text() or "")
                 ).strip()
-                if text and RESUBSCRIBE_BUTTON_RE.match(text):
+                if text and resubscribe_re.match(text):
                     return True
             except Exception:
                 continue
@@ -443,8 +338,9 @@ async def _has_resubscribe_button(page: Page) -> bool:
 
 async def _click_best_action(
     page: Page,
-    patterns: list[str],
+    patterns: Sequence[str],
     seen_signatures: set[str] | None = None,
+    resubscribe_re: re.Pattern[str] = RESUBSCRIBE_BUTTON_RE,
 ) -> str | None:
     selectors = "button, input[type='submit'], input[type='button'], [role='button'], a"
     elements: list[tuple[int, int, int, Any, str, str]] = []
@@ -483,7 +379,7 @@ async def _click_best_action(
                 text = re.sub(r"\s+", " ", text)
                 if not text or len(text) > 100:
                     continue
-                if RESUBSCRIBE_BUTTON_RE.match(text):
+                if resubscribe_re.match(text):
                     continue
                 if re.search(r"privacy|integritet|cookie|terms|villkor|login|sign\s+in|logga\s+in", text, re.I):
                     continue
@@ -519,16 +415,20 @@ async def run_playwright_action(
     headless: bool = True,
     max_steps: int = 6,
     allow_private: bool = False,
+    browser_locale: str = "en-US",
+    accept_language: str = "en-US,en;q=0.9",
+    patterns: UnsubPatterns | None = None,
 ) -> PlaywrightOutcome:
     """Execute deterministic Playwright navigation & clicks to confirm unsub/decline."""
     if not is_public_http_url(url, allow_private=allow_private):
         return PlaywrightOutcome(status="failed", final_url=url, detail="Blocked non-public or invalid URL")
 
+    pats = patterns or _DEFAULT_PATTERNS
     screenshots_dir.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time() * 1000)
     shot_path = screenshots_dir / f"{mode}-{stamp}.png"
 
-    patterns = DECLINE_BUTTON_PATTERNS if mode == "consulting_decline" else UNSUB_BUTTON_PATTERNS
+    btn_patterns = pats.decline_button_patterns if mode == "consulting_decline" else pats.unsub_button_patterns
     clicked_history: list[str] = []
     seen_signatures: set[str] = set()
 
@@ -536,8 +436,8 @@ async def run_playwright_action(
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
             viewport={"width": 1200, "height": 900},
-            locale="sv-SE",
-            extra_http_headers={"Accept-Language": "sv-SE,sv;q=0.9,en;q=0.8"},
+            locale=browser_locale or "en-US",
+            extra_http_headers={"Accept-Language": accept_language or "en-US,en;q=0.9"},
         )
 
         async def _route_guard(route: Route) -> None:
@@ -561,7 +461,7 @@ async def run_playwright_action(
                 pass
 
             for _step in range(max_steps):
-                if await _detect_captcha(page):
+                if await _detect_captcha(page, pats.captcha_re):
                     await page.screenshot(path=str(shot_path), full_page=False)
                     return PlaywrightOutcome(
                         status="blocked_captcha",
@@ -571,7 +471,9 @@ async def run_playwright_action(
                     )
 
                 vis_text = await _visible_text(page)
-                if SUCCESS_TEXT_RE.search(vis_text) or (mode == "unsubscribe" and await _has_resubscribe_button(page)):
+                if pats.success_text_re.search(vis_text) or (
+                    mode == "unsubscribe" and await _has_resubscribe_button(page, pats.resubscribe_button_re)
+                ):
                     await page.screenshot(path=str(shot_path), full_page=False)
                     return PlaywrightOutcome(
                         status="success",
@@ -582,15 +484,20 @@ async def run_playwright_action(
 
                 await _fill_email_if_needed(page, user_email)
                 if mode == "unsubscribe":
-                    await _check_optout_radios_or_boxes(page, OPTOUT_CHOICE_PATTERNS)
-                    await _uncheck_marketing_checkboxes(page)
+                    await _check_optout_radios_or_boxes(page, pats.optout_choice_re)
+                    await _uncheck_marketing_checkboxes(page, pats.optout_guard_re)
                 else:
                     await _check_optout_radios_or_boxes(
                         page,
                         [r"not\s+my\s+area", r"outside\s+my\s+expertise", r"not\s+relevant", r"not\s+interested"],
                     )
 
-                clicked = await _click_best_action(page, patterns, seen_signatures=seen_signatures)
+                clicked = await _click_best_action(
+                    page,
+                    btn_patterns,
+                    seen_signatures=seen_signatures,
+                    resubscribe_re=pats.resubscribe_button_re,
+                )
                 if not clicked:
                     break
                 clicked_history.append(clicked)
@@ -600,7 +507,7 @@ async def run_playwright_action(
                 except Exception:
                     pass
 
-            if await _detect_captcha(page):
+            if await _detect_captcha(page, pats.captcha_re):
                 await page.screenshot(path=str(shot_path), full_page=False)
                 return PlaywrightOutcome(
                     status="blocked_captcha",
@@ -611,7 +518,9 @@ async def run_playwright_action(
 
             vis_text = await _visible_text(page)
             await page.screenshot(path=str(shot_path), full_page=False)
-            if SUCCESS_TEXT_RE.search(vis_text) or (mode == "unsubscribe" and await _has_resubscribe_button(page)):
+            if pats.success_text_re.search(vis_text) or (
+                mode == "unsubscribe" and await _has_resubscribe_button(page, pats.resubscribe_button_re)
+            ):
                 return PlaywrightOutcome(
                     status="success",
                     final_url=page.url if _is_http_scheme(page.url) else url,

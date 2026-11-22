@@ -1,0 +1,192 @@
+# Declarative multilingual unsubscribe, opt-out, confirmation, and decline patterns for nollpost.
+# Users can extend these by placing a custom `unsub_patterns.toml` next to `config.toml`
+# (e.g. ~/.config/nollpost/unsub_patterns.toml) using the same section keys.
+
+[strong_unsub]
+sv = [
+    '\bavprenumerera\b',
+    '\bavregistrera\b',
+    '\bsluta\s+prenumerera\b',
+    '\bavsluta\s+(?:din\s+)?prenumeration\b',
+    '\bhantera\s+(?:dina\s+)?(?:prenumeration(?:er)?|utskick)\b',
+    '\bprenumerationsinställningar\b',
+    '\bavböj\s+utskick\b',
+    '\bta\s+bort\s+mig\b',
+    '\bvill\s+du\s+inte\s+(?:längre\s+)?(?:få|ha)\b',
+    '\binga\s+fler\s+utskick\b',
+]
+en = [
+    '\bunsubscribe\b',
+    '\bopt[\s-]?out\b',
+    '\bmanage\s+(?:your\s+)?(?:email\s+)?(?:preferences|subscriptions?)\b',
+    '\bemail\s+preferences\b',
+    '\bsubscription\s+preferences\b',
+    '\bcommunication\s+preferences\b',
+    '\bstop\s+receiving\b',
+    '\bremove\s+me\b',
+]
+da = ['\bafmeld\b']
+no = ['\bavmeld\b']
+de = ['\babmelden\b']
+fr = ['\bdésabonner\b', '\bse\s+désabonner\b']
+fi = ['\bperuuta\s+tilaus\b']
+
+[url_unsub_hints]
+patterns = [
+    'unsub',
+    'opt[-_]?out',
+    'avprenumerera',
+    'avregistrera',
+    'email[-_]?pref',
+    'manage[-_]?sub',
+    'exponea\.com/prod/unsub',
+    'list-manage\.com/unsubscribe',
+    'subscriptions/unsubscribe',
+]
+
+[unsub_buttons]
+# Tier 1: Explicit "unsubscribe / opt out from ALL" buttons
+tier1_all = [
+    'unsubscribe\s+(?:me\s+)?(?:from\s+)?all',
+    'opt[\s-]?out\s+(?:of\s+)?all',
+    'avprenumerera\s+(?:mig\s+)?(?:från\s+)?(?:alla|allt)',
+    'avregistrera\s+(?:mig\s+)?(?:från\s+)?(?:alla|allt)',
+    'avbryt\s+alla\s+prenumerationer',
+    'sluta\s+(?:få|ta\s+emot)\s+alla',
+    'afmeld\s+(?:mig\s+)?alle',
+    'avmeld\s+(?:meg\s+)?alle',
+    '(?:von\s+allen|alle)\s+abmelden',
+    '(?:me\s+)?désabonner\s+de\s+tout|tout\s+désabonner',
+    'dar(?:me)?\s+de\s+baja\s+de\s+todo',
+]
+# Tier 2: Explicit confirm / unsubscribe actions
+tier2_confirm = [
+    'bekräfta\s+(?:avprenumeration|avregistrering)',
+    'confirm\s+(?:unsubscription|unsubscribe|opt[\s-]?out)',
+    'avprenumerera',
+    'avregistrera',
+    'avsluta\s+(?:min\s+|din\s+)?prenumeration(?:en)?',
+    'sluta\s+prenumerera',
+    'ja,?\s+(?:avregistrera|avprenumerera|ta\s+bort|avsluta)',
+    'yes,?\s+(?:unsubscribe|remove|opt[\s-]?out)',
+    'unsubscribe',
+    'opt[\s-]?out',
+    'afmeld',
+    'avmeld',
+    'abmelden',
+    '(?:me\s+|se\s+)?désabonner',
+    'dar(?:me|se)?\s+de\s+baja',
+    'peruuta(?:\s+tilaus)?',
+]
+# Tier 3: Save / update preference center choices
+tier3_save = [
+    'spara\s+(?:mina\s+)?(?:val|inställningar|ändringar)',
+    'save\s+(?:my\s+)?(?:preferences|changes|settings|choices)',
+    'update\s+(?:my\s+)?(?:preferences|subscription|settings)',
+    'uppdatera(?:\s+(?:inställningar|prenumeration(?:er)?|val))?',
+    'bekräfta',
+    'spara',
+    'confirm',
+    'update',
+    'submit',
+    'skicka',
+    'verkställ',
+]
+
+[optout_choices]
+patterns = [
+    'unsubscribe\s+(?:me\s+)?(?:from\s+)?all',
+    'opt[\s-]?out\s+(?:of\s+)?all',
+    'avprenumerera',
+    'avregistrera',
+    'avbryt\s+alla',
+    'vill\s+inte\s+längre\s+(?:ta\s+emot|ha|få)',
+    'inga\s+fler\s+(?:utskick|mejl|publikationer|nyhetsbrev)',
+    'no\s+longer\s+(?:wish|want)\s+to\s+receive',
+    'do\s+not\s+send\s+me',
+    'stop\s+receiving\s+all',
+    'remove\s+me\s+from\s+all',
+    'afmeld\s+alle|avmeld\s+alle|alle\s+abmelden|tout\s+désabonner',
+]
+
+[resubscribe_buttons]
+patterns = [
+    'resubscribe',
+    're-subscribe',
+    'subscribe\s+again',
+    'prenumerera\s+igen',
+    'återaktivera(?:\s+prenumeration(?:en)?)?',
+]
+
+[success_phrases]
+en = [
+    "you(?:'ve|\\s+have|\\s+are)\\s+(?:now\\s+)?(?:successfully\\s+)?(?:been\\s+)?(?:unsubscribed|opted\\s+out|removed)",
+    'successfully\s+(?:been\s+)?(?:unsubscribed|opted\s+out|removed|updated)',
+    'unsubscription\s+(?:is\s+)?(?:confirmed|complete[d]?|successful)',
+    'removed\s+from\s+(?:our|this|the|all)\s+(?:mailing\s+|email\s+)?lists?',
+    'no\s+longer\s+receive',
+    'will\s+not\s+receive\s+any\s+more',
+    '(?:email\s+|communication\s+|subscription\s+|notification\s+)?preferences\s+(?:have\s+been\s+|are\s+)?(?:saved|updated|changed)',
+    'your\s+(?:changes|choices|settings)\s+have\s+been\s+saved',
+]
+sv = [
+    'du\s+(?:är|har)\s+(?:nu\s+)?(?:blivit\s+)?(?:avregistrerad|avprenumererad|avprenumererat|borttagen)',
+    '(?:din\s+)?(?:avprenumeration|avregistrering)\s+(?:är\s+|har\s+)?(?:nu\s+)?(?:bekräftad|genomförd|genomförts|klar|sparad|registrerad)',
+    '(?:du\s+)?(?:avslutar|har\s+avslutat)\s+(?:din\s+)?prenumeration(?:en)?',
+    'du\s+kommer\s+inte\s+längre\s+(?:att\s+)?(?:få|ta\s+emot|motta)',
+    'vi\s+har\s+(?:nu\s+)?(?:tagit\s+bort\s+din|avregistrerat\s+dig|sparat\s+dina\s+val|uppdaterat\s+dina)',
+    '(?:tack[!,]?\s*)?(?:dina\s+|din\s+|ditt\s+)?(?:inställningar|preferenser|val|ändringar|prenumeration(?:er)?)\s+(?:är\s+|har\s+)?(?:nu\s+)?(?:sparade|sparat|sparats|uppdaterade|uppdaterad|uppdaterats|ändrade|ändrats)',
+    'alla\s+(?:e-?postutskick|prenumerationer)\s+(?:är\s+|har\s+)?(?:nu\s+)?(?:avregistrerade|avslutade|avbrutna)',
+]
+da_no = [
+    'du\s+er\s+(?:nu\s+|nå\s+)?(?:afmeldt|avmeldt)',
+    '(?:din\s+)?(?:afmelding|avmelding)\s+er\s+(?:bekræftet|registrert|gjennomført)',
+    '(?:dine\s+|din\s+)?(?:præferencer|preferanser|indstillinger|innstillinger|abonnement(?:er)?)\s+(?:er\s+|har\s+blitt\s+)?(?:nu\s+|nå\s+)?(?:gemt|opdateret|lagret|oppdatert)',
+]
+de = [
+    '(?:erfolgreich|wurden)\s+abgemeldet',
+    'abmeldung\s+(?:war\s+)?(?:erfolgreich|bestätigt)',
+    '(?:ihre\s+)?(?:einstellungen|präferenzen)\s+wurden\s+(?:gespeichert|aktualisiert)',
+]
+fr = [
+    'vous\s+(?:êtes|avez\s+été)\s+désabonné',
+    'désabonnement\s+(?:confirmé|pris\s+en\s+compte)',
+    '(?:vos\s+)?préférences\s+ont\s+été\s+(?:enregistrées|mises\s+à\s+jour)',
+]
+es = [
+    'te\s+has\s+dado\s+de\s+baja',
+    'baja\s+(?:ha\s+sido\s+)?confirmada',
+    '(?:tus\s+|sus\s+)?preferencias\s+(?:se\s+han|han\s+sido)\s+(?:guardadas|actualizadas)',
+]
+fi = ['tilaus\s+on\s+peruutettu']
+consulting = [
+    'project\s+declined',
+    'thank\s+you\s+for\s+(?:your\s+response|letting\s+us\s+know)',
+    'you\s+have\s+declined',
+]
+
+[decline_buttons]
+patterns = [
+    'decline(?:\s+(?:now|project|consultation))?',
+    'not\s+my\s+area',
+    'outside\s+my\s+expertise',
+    'not\s+relevant',
+    'not\s+interested',
+    'avböj',
+    'confirm',
+    'submit',
+]
+
+[captcha]
+patterns = [
+    'g-recaptcha',
+    'h-captcha',
+    'hcaptcha\.com',
+    'recaptcha/api',
+    'challenges\.cloudflare\.com/turnstile',
+    'cf-turnstile',
+    'verify\s+you\s+are\s+human',
+    'are\s+you\s+human',
+    'jag\s+är\s+inte\s+en\s+robot',
+    'i\s+am\s+not\s+a\s+robot',
+]

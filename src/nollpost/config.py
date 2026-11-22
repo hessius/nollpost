@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import locale
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from nollpost.packs import resolve_packs
+
+_BCP47_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4}|-[0-9]{3})?$")
 
 VALID_GMAIL_ARCHIVE_STRATEGIES = ("ui_menu", "tag_staging", "two_hop")
 
@@ -36,6 +40,11 @@ gmail_archive_strategy = "ui_menu"
 [rules]
 # Optional built-in regional/domain rule packs (e.g., ["se"] for Swedish billing/Kivra/delivery rules).
 enabled_packs = []
+
+[browser]
+# Playwright Chromium locale and Accept-Language header (auto-detected from OS or "en-US" when empty).
+locale = ""
+accept_language = ""
 
 [consulting]
 # Expert-network outreach classification is disabled by default.
@@ -95,6 +104,9 @@ class TriageConfig:
     consulting_enabled: bool = False
     consulting_decline_boilerplate: str = ""
     gmail_archive_strategy: str = "ui_menu"
+    browser_locale: str = "en-US"
+    accept_language: str = "en-US,en;q=0.9"
+    patterns_path: Optional[Path] = None
     enabled_packs: list[str] = field(default_factory=list)
     archive_map: dict[str, str] = field(default_factory=dict)
     consulting_networks: list[str] = field(default_factory=list)
@@ -146,6 +158,27 @@ def get_cache_dir() -> Path:
     )
 
 
+def _detect_system_locale() -> str:
+    raw_loc = locale.getlocale()[0] or os.environ.get("LANG", "")
+    cleaned = raw_loc.split(".")[0].split("@")[0].replace("_", "-").strip()
+    if not cleaned or cleaned.upper() in ("C", "POSIX") or not _BCP47_LOCALE_RE.fullmatch(cleaned):
+        return "en-US"
+    parts = cleaned.split("-")
+    if len(parts) == 2:
+        return f"{parts[0].lower()}-{parts[1].upper() if len(parts[1]) == 2 else parts[1]}"
+    return parts[0].lower()
+
+
+def _default_accept_language(bcp47_locale: str) -> str:
+    lang = bcp47_locale.split("-")[0].lower()
+    has_region = "-" in bcp47_locale
+    if lang == "en":
+        return f"{bcp47_locale},en;q=0.9" if has_region else "en,en-US;q=0.9"
+    if has_region:
+        return f"{bcp47_locale},{lang};q=0.9,en;q=0.8"
+    return f"{bcp47_locale},en;q=0.8"
+
+
 def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, val in updates.items():
@@ -184,8 +217,19 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
     user_sec = merged["user"]
     acct_sec = merged["accounts"]
     rules_sec = merged["rules"]
+    browser_sec = merged["browser"]
     consult_sec = merged["consulting"]
     prof_sec = merged["profile"]
+
+    browser_locale = str(browser_sec.get("locale", "")).strip() or _detect_system_locale()
+    accept_language = str(browser_sec.get("accept_language", "")).strip() or _default_accept_language(browser_locale)
+
+    patterns_override = os.environ.get("NOLLPOST_PATTERNS")
+    if patterns_override:
+        patterns_path: Optional[Path] = Path(patterns_override).expanduser()
+    else:
+        candidate = config_path.parent / "unsub_patterns.toml"
+        patterns_path = candidate if candidate.exists() else None
 
     gmail_strategy = str(acct_sec.get("gmail_archive_strategy", "ui_menu")).strip().lower()
     if gmail_strategy not in VALID_GMAIL_ARCHIVE_STRATEGIES:
@@ -232,6 +276,9 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
         consulting_enabled=consulting_enabled,
         consulting_decline_boilerplate=boilerplate,
         gmail_archive_strategy=gmail_strategy,
+        browser_locale=browser_locale,
+        accept_language=accept_language,
+        patterns_path=patterns_path,
         enabled_packs=enabled_packs,
         archive_map={str(k): str(v) for k, v in acct_sec.get("archive_map", {}).items()},
         consulting_networks=[s.lower() for s in networks],

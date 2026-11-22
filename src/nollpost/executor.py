@@ -13,6 +13,7 @@ from nollpost.config import TriageConfig
 from nollpost.extractor import extract_pdf_attachment
 from nollpost.mail_bridge import AppleMailBridge
 from nollpost.models import ClassifiedItem, ExecutionItemResult, PlaywrightOutcome
+from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.playwright_runner import is_public_http_url, run_playwright_action, try_rfc8058_one_click
 from nollpost.store import TriageStore
 
@@ -141,6 +142,7 @@ class BatchExecutor:
                 )
 
         unsub_cache: dict[str, PlaywrightOutcome] = {}
+        unsub_patterns = load_unsub_patterns(self.config.patterns_path)
         to_mark_read: dict[tuple[str, str], list[tuple[ClassifiedItem, ExecutionItemResult]]] = defaultdict(list)
         to_archive: dict[tuple[str, str, str], list[tuple[ClassifiedItem, ExecutionItemResult]]] = defaultdict(list)
 
@@ -321,7 +323,9 @@ class BatchExecutor:
                         ) and not force_pw
                         if try_post_first:
                             outcome = await try_rfc8058_one_click(
-                                unsub_t.url, allow_private=self.allow_private_urls
+                                unsub_t.url,
+                                allow_private=self.allow_private_urls,
+                                patterns=unsub_patterns,
                             )
                             if outcome.status == "failed":
                                 outcome = await run_playwright_action(
@@ -331,6 +335,9 @@ class BatchExecutor:
                                     screenshots_dir=self.config.screenshots_dir,
                                     headless=headless,
                                     allow_private=self.allow_private_urls,
+                                    browser_locale=self.config.browser_locale,
+                                    accept_language=self.config.accept_language,
+                                    patterns=unsub_patterns,
                                 )
                         else:
                             outcome = await run_playwright_action(
@@ -340,6 +347,9 @@ class BatchExecutor:
                                 screenshots_dir=self.config.screenshots_dir,
                                 headless=headless,
                                 allow_private=self.allow_private_urls,
+                                browser_locale=self.config.browser_locale,
+                                accept_language=self.config.accept_language,
+                                patterns=unsub_patterns,
                             )
                         fb_url = item.extracted.fallback_unsub_url
                         if outcome.status == "failed" and fb_url and fb_url != unsub_t.url:
@@ -350,6 +360,9 @@ class BatchExecutor:
                                 screenshots_dir=self.config.screenshots_dir,
                                 headless=headless,
                                 allow_private=self.allow_private_urls,
+                                browser_locale=self.config.browser_locale,
+                                accept_language=self.config.accept_language,
+                                patterns=unsub_patterns,
                             )
                         unsub_cache[sender_key] = outcome
                         if outcome.status == "success":
@@ -428,6 +441,9 @@ class BatchExecutor:
                         screenshots_dir=self.config.screenshots_dir,
                         headless=headless,
                         allow_private=self.allow_private_urls,
+                        browser_locale=self.config.browser_locale,
+                        accept_language=self.config.accept_language,
+                        patterns=unsub_patterns,
                     )
                     if outcome.status == "success":
                         self.store.increment_stat("total_declined", 1)

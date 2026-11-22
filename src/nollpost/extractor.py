@@ -16,48 +16,17 @@ from bs4 import BeautifulSoup
 
 from nollpost.models import ConsultingLinks, ExtractedEmailInfo, PdfAttachment, UnsubTarget
 from nollpost.packs import resolve_packs
+from nollpost.patterns_loader import UnsubPatterns, load_unsub_patterns
 
 ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u00ad]")
 
-STRONG_UNSUB_PATTERNS = [
-    # Swedish
-    r"\bavprenumerera\b",
-    r"\bavregistrera\b",
-    r"\bsluta\s+prenumerera\b",
-    r"\bavsluta\s+(?:din\s+)?prenumeration\b",
-    r"\bhantera\s+(?:dina\s+)?(?:prenumeration(?:er)?|utskick)\b",
-    r"\bprenumerationsinställningar\b",
-    r"\bavböj\s+utskick\b",
-    r"\bta\s+bort\s+mig\b",
-    r"\bvill\s+du\s+inte\s+(?:längre\s+)?(?:få|ha)\b",
-    r"\binga\s+fler\s+utskick\b",
-    # English
-    r"\bunsubscribe\b",
-    r"\bopt[\s-]?out\b",
-    r"\bmanage\s+(?:your\s+)?(?:email\s+)?(?:preferences|subscriptions?)\b",
-    r"\bemail\s+preferences\b",
-    r"\bsubscription\s+preferences\b",
-    r"\bcommunication\s+preferences\b",
-    r"\bstop\s+receiving\b",
-    r"\bremove\s+me\b",
-    # Nordic / European
-    r"\bafmeld\b",
-    r"\bavmeld\b",
-    r"\babmelden\b",
-    r"\bdésabonner\b",
-    r"\bse\s+désabonner\b",
-    r"\bperuuta\s+tilaus\b",
-]
-
-STRONG_UNSUB_RE = re.compile("|".join(STRONG_UNSUB_PATTERNS), re.I)
+_DEFAULT_PATTERNS = load_unsub_patterns()
+STRONG_UNSUB_PATTERNS = list(_DEFAULT_PATTERNS.strong_unsub_patterns)
+STRONG_UNSUB_RE = _DEFAULT_PATTERNS.strong_unsub_re
+URL_UNSUB_HINT_RE = _DEFAULT_PATTERNS.url_unsub_hint_re
 
 CLICK_HERE_RE = re.compile(
     r"^(?:här|klicka\s+här|tryck\s+här|here|click\s+here|this\s+link|länk|denna\s+länk)$",
-    re.I,
-)
-
-URL_UNSUB_HINT_RE = re.compile(
-    r"(?:unsub|opt[-_]?out|avprenumerera|avregistrera|email[-_]?pref|manage[-_]?sub|exponea\.com/prod/unsub|list-manage\.com/unsubscribe|subscriptions/unsubscribe)",
     re.I,
 )
 
@@ -261,7 +230,14 @@ def _is_social_or_noise_url(url: str) -> bool:
     return False
 
 
-def _score_unsub_anchor(anchor_text: str, aria: str, parent_text: str, href: str) -> tuple[float, str]:
+def _score_unsub_anchor(
+    anchor_text: str,
+    aria: str,
+    parent_text: str,
+    href: str,
+    patterns: UnsubPatterns | None = None,
+) -> tuple[float, str]:
+    pats = patterns or _DEFAULT_PATTERNS
     low_href = href.lower()
     if not low_href.startswith(("http://", "https://")):
         return -100.0, ""
@@ -270,21 +246,21 @@ def _score_unsub_anchor(anchor_text: str, aria: str, parent_text: str, href: str
         return -100.0, ""
 
     label = _clean_text(anchor_text or aria)
-    if UNSUB_NEGATIVE_LINK_RE.search(label) and not STRONG_UNSUB_RE.search(label):
+    if UNSUB_NEGATIVE_LINK_RE.search(label) and not pats.strong_unsub_re.search(label):
         return -50.0, label
 
     score = 0.0
-    if label and STRONG_UNSUB_RE.search(label):
+    if label and pats.strong_unsub_re.search(label):
         score += 10.0
-    elif label and CLICK_HERE_RE.match(label) and parent_text and STRONG_UNSUB_RE.search(parent_text):
+    elif label and CLICK_HERE_RE.match(label) and parent_text and pats.strong_unsub_re.search(parent_text):
         score += 8.0
-    elif not label and parent_text and STRONG_UNSUB_RE.search(parent_text):
+    elif not label and parent_text and pats.strong_unsub_re.search(parent_text):
         score += 6.0
 
-    if URL_UNSUB_HINT_RE.search(low_href):
+    if pats.url_unsub_hint_re.search(low_href):
         score += 4.0
 
-    if UNSUB_NEGATIVE_LINK_RE.search(low_href) and not STRONG_UNSUB_RE.search(label):
+    if UNSUB_NEGATIVE_LINK_RE.search(low_href) and not pats.strong_unsub_re.search(label):
         score -= 8.0
 
     return score, label or _clean_text(parent_text)[:80]
@@ -358,9 +334,12 @@ def _extract_pertinent_url(
     subject: str = "",
     wanted_domains: Sequence[str] = (),
     enabled_packs: Sequence[str] = (),
+    patterns: UnsubPatterns | None = None,
 ) -> tuple[Optional[str], Optional[str]]:
     if consulting.review_url:
         return consulting.review_url, "Review consulting project"
+
+    pats = patterns or _DEFAULT_PATTERNS
 
     packs = resolve_packs(enabled_packs)
     subj_tokens = [
@@ -389,7 +368,7 @@ def _extract_pertinent_url(
 
         decoded_full, dest_host, dest_path = _unwrap_tracking_url(href)
         low_text = text.lower()
-        if URL_UNSUB_HINT_RE.search(decoded_full) or STRONG_UNSUB_RE.search(text):
+        if pats.url_unsub_hint_re.search(decoded_full) or pats.strong_unsub_re.search(text):
             continue
         if PERTINENT_NEGATIVE_RE.search(text) or PERTINENT_NEGATIVE_RE.search(decoded_full):
             continue
@@ -463,8 +442,10 @@ def extract_email_info(
     consulting_enabled: bool = True,
     wanted_domains: Sequence[str] = (),
     enabled_packs: Sequence[str] = (),
+    patterns: UnsubPatterns | None = None,
 ) -> ExtractedEmailInfo:
     """Parse raw RFC 822 bytes into unsubscribe targets, consulting links, pertinent link, and PDFs."""
+    pats = patterns or _DEFAULT_PATTERNS
     msg = email.message_from_bytes(raw_source, policy=policy.default)
 
     list_unsub_raw = " ".join(msg.get_all("List-Unsubscribe", []))
@@ -503,7 +484,7 @@ def extract_email_info(
             aria = _clean_text(str(a.get("aria-label") or a.get("title") or ""))
             parent_text = _clean_text(a.parent.get_text(" ", strip=True))[:220] if a.parent else ""
             anchors.append({"href": href, "text": anchor_text or aria})
-            score, matched_lbl = _score_unsub_anchor(anchor_text, aria, parent_text, href)
+            score, matched_lbl = _score_unsub_anchor(anchor_text, aria, parent_text, href, patterns=pats)
             if score >= 7.0 and score > best_body_score:
                 best_body_score = score
                 best_body_unsub = UnsubTarget(
@@ -526,7 +507,7 @@ def extract_email_info(
             ctx = _clean_text(plain_body[ctx_start:ctx_end])
             if not html_body:
                 anchors.append({"href": url, "text": ""})
-            if STRONG_UNSUB_RE.search(ctx) or URL_UNSUB_HINT_RE.search(url):
+            if pats.strong_unsub_re.search(ctx) or pats.url_unsub_hint_re.search(url):
                 best_body_unsub = UnsubTarget(
                     kind="https_link",
                     url=url,
@@ -570,6 +551,7 @@ def extract_email_info(
         subject=subject_decoded,
         wanted_domains=wanted_domains,
         enabled_packs=enabled_packs,
+        patterns=pats,
     )
 
     interesting_headers = []
