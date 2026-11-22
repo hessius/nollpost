@@ -217,7 +217,9 @@ def test_newsletter_unsub_gate_learned_preference_and_repeat_offender(tmp_path: 
 
 
 def test_word_boundary_bill_protection_and_catchup_safety(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("NOLLPOST_CONFIG", str(tmp_path / "config.toml"))
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[rules]\nenabled_packs = ["se"]\n', encoding="utf-8")
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
     cfg = load_config(ensure_files=False)
 
     # "democracy" must NOT substring-match "ocr" (consulting keyword) -> treated cleanly via plain noreply fallback
@@ -304,8 +306,56 @@ def test_default_config_is_neutral_and_validates_gmail_strategy(tmp_path: Path, 
     cfg = load_config(ensure_files=True)
     assert cfg.display_name == ""
     assert cfg.gmail_archive_strategy == "ui_menu"
+    assert cfg.consulting_enabled is False
+    assert cfg.enabled_packs == []
     assert cfg.wanted_domains == []
     assert cfg.consulting_networks == []
+
+    # With consulting disabled by default, consulting emails do not route to consulting category
+    non_consult = classify_email(
+        _hdr("Consultation Request", "RM <rm@guidepointglobal.com>", "rm@guidepointglobal.com", "guidepointglobal.com"),
+        ExtractedEmailInfo(consulting_links=ConsultingLinks(review_url="https://gp.test/rev", decline_url="https://gp.test/dec")),
+        cfg,
+        "Archive",
+    )
+    assert non_consult.category != "consulting"
+
+    # Without the "se" pack, Swedish-only delivery phrases do not trigger Swedish transactional rule
+    swedish_tx = classify_email(
+        _hdr("Ditt paket", "Shop <hello@shop.example>", "hello@shop.example", "shop.example"),
+        ExtractedEmailInfo(plain_excerpt="Din beställning är packad och skickas nu."),
+        cfg,
+        "Archive",
+    )
+    assert swedish_tx.subcategory != "Transactional"
+
+    # Enabling "se" pack activates Swedish delivery and Kivra rules
+    cfg_path.write_text('[rules]\nenabled_packs = ["se"]\n', encoding="utf-8")
+    se_cfg = load_config(ensure_files=False)
+    assert se_cfg.enabled_packs == ["se"]
+    se_tx = classify_email(
+        _hdr("Ditt paket", "Shop <hello@shop.example>", "hello@shop.example", "shop.example"),
+        ExtractedEmailInfo(plain_excerpt="Din beställning är packad och skickas nu."),
+        se_cfg,
+        "Archive",
+    )
+    assert se_tx.subcategory == "Transactional"
+
+    cfg_path.write_text('[rules]\nenabled_packs = ["nonexistent"]\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="Unknown rule pack"):
+        load_config(ensure_files=False)
+
+    cfg_path.write_text('[rules]\nenabled_packs = "se"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a list"):
+        load_config(ensure_files=False)
+
+    mixed_case_kivra = classify_email(
+        _hdr("Nytt brev", "Kivra <No-Reply@Kivra.COM>", "No-Reply@Kivra.COM", "Kivra.COM"),
+        ExtractedEmailInfo(),
+        se_cfg,
+        "Archive",
+    )
+    assert mixed_case_kivra.subcategory == "Gov / Kivra"
 
     cfg_path.write_text('[accounts]\ngmail_archive_strategy = "invalid_mode"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="gmail_archive_strategy"):

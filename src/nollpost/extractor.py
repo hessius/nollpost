@@ -9,12 +9,13 @@ from email import policy
 from email.header import decode_header
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup
 
 from nollpost.models import ConsultingLinks, ExtractedEmailInfo, PdfAttachment, UnsubTarget
+from nollpost.packs import resolve_packs
 
 ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u00ad]")
 
@@ -355,16 +356,22 @@ def _extract_pertinent_url(
     consulting: ConsultingLinks,
     sender_domain: str,
     subject: str = "",
+    wanted_domains: Sequence[str] = (),
+    enabled_packs: Sequence[str] = (),
 ) -> tuple[Optional[str], Optional[str]]:
     if consulting.review_url:
         return consulting.review_url, "Review consulting project"
 
+    packs = resolve_packs(enabled_packs)
     subj_tokens = [
         tok
         for tok in re.findall(r"[a-z0-9åäö]{4,}", subject.lower())
         if tok not in SUBJECT_STOPWORDS
     ]
-    sender_root = _registrable_root(sender_domain.lower())
+    sender_domain_low = sender_domain.lower().strip()
+    sender_root = _registrable_root(sender_domain_low)
+    wanted_lower = tuple(d.lower().strip() for d in wanted_domains if d.strip())
+    wanted_roots = tuple(_registrable_root(d) for d in wanted_lower)
 
     best_score = -1.0
     best_url: Optional[str] = None
@@ -391,22 +398,19 @@ def _extract_pertinent_url(
         dest_root = _registrable_root(dest_host)
         same_brand_host = bool(sender_root and dest_root == sender_root)
 
-        if "kivra" in sender_domain:
-            if "app.kivra.com" in decoded_full:
-                score += 8.0
-            elif "kivra" in dest_host:
-                score += 3.0
-            if re.search(r"logga\s+in|öppna|visa|meddelande|läsa", low_text):
-                score += 8.0
-            if re.search(r"/om-kivra|/about|/faq|/hjalp", dest_path):
-                score -= 5.0
+        for pack in packs:
+            if pack.gov_domain_token and pack.gov_domain_token in sender_domain_low:
+                if pack.gov_app_host and pack.gov_app_host in decoded_full:
+                    score += 8.0
+                elif pack.gov_domain_token in dest_host:
+                    score += 3.0
+                if pack.gov_cta_re and pack.gov_cta_re.search(low_text):
+                    score += 8.0
+                if pack.gov_noise_path_re and pack.gov_noise_path_re.search(dest_path):
+                    score -= 5.0
 
         if "github.com" in decoded_full and re.search(r"/(?:pull|issues|discussions|commit)/", dest_path):
             score += 12.0
-        if ("reddit" in sender_domain or "reddit.com" in dest_host) and re.search(
-            r"view\s+reply|se\s+svar|kommentar|/comments/", low_text + " " + dest_path
-        ):
-            score += 11.0
 
         if BROWSER_OR_TOPIC_CTA_RE.search(low_text):
             score += 14.0
@@ -417,7 +421,8 @@ def _extract_pertinent_url(
                 score += 2.0
 
         if same_brand_host or any(
-            d in dest_host for d in ("kickstarter.com", "backerkit.com", "patreon.com", "meticuloushome.com", "home-assistant.io", "substack.com")
+            dest_host == d or dest_host.endswith("." + d) or dest_root == wr
+            for d, wr in zip(wanted_lower, wanted_roots)
         ):
             score += 4.0
 
@@ -451,7 +456,14 @@ def _extract_pertinent_url(
     return best_url, best_label
 
 
-def extract_email_info(raw_source: bytes, sender_domain: str = "") -> ExtractedEmailInfo:
+def extract_email_info(
+    raw_source: bytes,
+    sender_domain: str = "",
+    *,
+    consulting_enabled: bool = True,
+    wanted_domains: Sequence[str] = (),
+    enabled_packs: Sequence[str] = (),
+) -> ExtractedEmailInfo:
     """Parse raw RFC 822 bytes into unsubscribe targets, consulting links, pertinent link, and PDFs."""
     msg = email.message_from_bytes(raw_source, policy=policy.default)
 
@@ -545,13 +557,19 @@ def extract_email_info(raw_source: bytes, sender_domain: str = "") -> ExtractedE
         unsub_target = best_body_unsub
 
     subject_decoded = _decode_mime_header_text(str(msg.get("Subject", "")))
-    consulting_links = _extract_consulting_links(anchors, combined_text, sender_domain)
+    consulting_links = (
+        _extract_consulting_links(anchors, combined_text, sender_domain)
+        if consulting_enabled
+        else ConsultingLinks()
+    )
     pertinent_url, pertinent_label = _extract_pertinent_url(
         anchors,
         unsub_target.url if unsub_target else None,
         consulting_links,
         sender_domain,
         subject=subject_decoded,
+        wanted_domains=wanted_domains,
+        enabled_packs=enabled_packs,
     )
 
     interesting_headers = []

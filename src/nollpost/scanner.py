@@ -21,7 +21,7 @@ from nollpost.models import (
 )
 from nollpost.store import TriageStore
 
-EXTRACTOR_VERSION = "v4"
+EXTRACTOR_VERSION = "v5"
 
 
 def _deserialize_extracted(data: dict[str, Any]) -> ExtractedEmailInfo:
@@ -71,15 +71,27 @@ def _extract_cached(
     bridge: AppleMailBridge,
     store: TriageStore,
     header: MailHeader,
+    config: TriageConfig,
     bypass_cache: bool = False,
 ) -> ExtractedEmailInfo:
-    cache_key = f"{EXTRACTOR_VERSION}:{header.account}:{header.internal_id}:{header.rfc_message_id}"
+    packs_key = ",".join(sorted(config.enabled_packs))
+    wanted_key = ",".join(sorted(config.wanted_domains))
+    cache_key = (
+        f"{EXTRACTOR_VERSION}:c={int(config.consulting_enabled)}:p={packs_key}:w={wanted_key}:"
+        f"{header.account}:{header.internal_id}:{header.rfc_message_id}"
+    )
     if not bypass_cache:
         cached = store.get_cached_extraction(cache_key)
         if cached is not None:
             return _deserialize_extracted(cached)
     raw = bridge.get_raw_source(header.account, header.mailbox, header.internal_id)
-    extracted = extract_email_info(raw, sender_domain=header.sender_domain)
+    extracted = extract_email_info(
+        raw,
+        sender_domain=header.sender_domain,
+        consulting_enabled=config.consulting_enabled,
+        wanted_domains=config.wanted_domains,
+        enabled_packs=config.enabled_packs,
+    )
     payload = extracted.to_dict()
     payload["headers_snapshot"] = extracted.headers_snapshot
     payload["footer_html_snapshot"] = extracted.footer_html_snapshot
@@ -162,7 +174,7 @@ def run_scan(
                 if sender_mem and (sender_mem.unsubscribed_at or sender_mem.keep_subscribed):
                     continue
                 try:
-                    extracted = _extract_cached(bridge, store, sample, bypass_cache=bypass_cache)
+                    extracted = _extract_cached(bridge, store, sample, config=config, bypass_cache=bypass_cache)
                 except Exception:
                     continue
                 item = classify_email(
@@ -204,7 +216,7 @@ def run_scan(
                 uid = f"{h.account}:{h.mailbox}:{h.internal_id}"
                 active_uids.add(uid)
                 try:
-                    extracted = _extract_cached(bridge, store, h, bypass_cache=bypass_cache)
+                    extracted = _extract_cached(bridge, store, h, config=config, bypass_cache=bypass_cache)
                 except Exception:
                     extracted = ExtractedEmailInfo()
                 sender_mem = store.get_sender_memory(h.sender_email, h.sender_domain)

@@ -12,14 +12,15 @@ from nollpost.models import (
     ExtractedEmailInfo,
     MailHeader,
 )
+from nollpost.packs import resolve_packs
 from nollpost.store import SenderMemoryRecord, days_since_iso, hours_since_iso
 
 SECURITY_KEYWORDS_RE = re.compile(
-    r"\b(?:säkerhetsvarning|security\s+alert|app[\s‑-]specifikt\s+lösenord|app-specific\s+password|verification\s+code|engångskod|logga\s+in\s+från|sign-in|two-factor|2fa)\b",
+    r"\b(?:security\s+alert|app-specific\s+password|verification\s+code|sign-in|two-factor|2fa)\b",
     re.I,
 )
 
-REDDIT_COMMENT_RE = re.compile(
+COMMENT_REPLY_RE = re.compile(
     r"\b(?:replied\s+to|svarade\s+på|commented\s+on|kommenterade|mentioned\s+you|nämnde\s+dig)\b",
     re.I,
 )
@@ -35,24 +36,28 @@ NOREPLY_RE = re.compile(
 )
 
 STRONG_RETAIL_PROMO_RE = re.compile(
-    r"\b(?:black\s+(?:week|friday)|rabatt|erbjudande|fynd|% off|rea\b|nyhetsbrev|discount\s+code)\b",
+    r"\b(?:black\s+(?:week|friday)|% off|discount\s+code)\b",
     re.I,
 )
 
 CRITICAL_BILL_TERMS_RE = re.compile(
-    r"\b(?:kivra|fortnox|bankgirot|skatteverket|faktura|invoice|påminnelse|inkasso|förfallodatum|due\s+date|betalning|payout|utbetalning)\b",
+    r"\b(?:invoice|due\s+date|payout|payment\s+reminder|past\s+due|billing)\b",
     re.I,
 )
 
+BASE_SECURITY_DOMAINS = ("accounts.google.com", "email.apple.com", "id.apple.com")
+BASE_BILL_SENDERS = ("accounts.google.com", "email.apple.com")
+BASE_TRANSACTIONAL_RE = re.compile(r"\b(?:tracking\s+number|order\s+shipped|out\s+for\s+delivery)\b", re.I)
 
-def _domain_matches(domain: str, candidates: list[str]) -> bool:
+
+def _domain_matches(domain: str, candidates: list[str] | tuple[str, ...]) -> bool:
     dom = domain.lower().strip()
     if not dom:
         return False
     return any(dom == c or dom.endswith("." + c) for c in candidates)
 
 
-def _contains_any_keyword(text: str, keywords: list[str]) -> Optional[str]:
+def _contains_any_keyword(text: str, keywords: list[str] | tuple[str, ...]) -> Optional[str]:
     for kw in keywords:
         if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", text, re.I):
             return kw
@@ -100,11 +105,14 @@ def classify_email(
 ) -> ClassifiedItem:
     """Classify one email into category, default action, allowed actions, and badges."""
     uid = f"{header.account}:{header.mailbox}:{header.internal_id}"
+    sender_domain_low = header.sender_domain.lower()
+    sender_email_low = header.sender_email.lower()
     combined = f"{header.subject}\n{header.sender}\n{extracted.plain_excerpt}".lower()
     badges: list[str] = []
     learned_pref: Optional[str] = None
     repeat_days: Optional[int] = None
 
+    packs = resolve_packs(config.enabled_packs)
     has_unsub = extracted.unsub_target is not None
     looks_like_newsletter = bool(extracted.newsletter_signals)
 
@@ -131,9 +139,10 @@ def classify_email(
             reason="Explicitly marked always keep",
         )
 
-    # 2. Consulting outreach (Guidepoint, Visasq/Coleman, GLG, etc.)
-    is_consulting = _domain_matches(header.sender_domain, config.consulting_networks) or bool(
-        extracted.consulting_links.decline_url or extracted.consulting_links.review_url
+    # 2. Consulting outreach (opt-in via [consulting] enabled = true or configured networks)
+    is_consulting = config.consulting_enabled and (
+        _domain_matches(header.sender_domain, config.consulting_networks)
+        or bool(extracted.consulting_links.decline_url or extracted.consulting_links.review_url)
     )
     if is_consulting:
         pos_kw = _contains_any_keyword(combined, config.consulting_match_keywords)
@@ -187,27 +196,49 @@ def classify_email(
             reason=reason,
         )
 
-    # 3. Bills, Invoices, Gov / Kivra, Security Alerts (protected even if ESP sends with List-Unsubscribe!)
-    bill_kw = _contains_any_keyword(combined, config.bill_keywords)
+    # 3. Bills, Invoices, Gov / Digital Mail, Security Alerts (protected even if ESP sends with List-Unsubscribe!)
+    effective_bill_keywords = list(config.bill_keywords)
+    explicit_bill_senders = list(BASE_BILL_SENDERS)
+    for pack in packs:
+        effective_bill_keywords.extend(pack.bill_keywords)
+        explicit_bill_senders.extend(pack.explicit_bill_senders)
+
+    bill_kw = _contains_any_keyword(combined, effective_bill_keywords)
     is_security = bool(
         SECURITY_KEYWORDS_RE.search(combined)
-        or _domain_matches(header.sender_domain, ["accounts.google.com", "email.apple.com", "id.apple.com"])
+        or _domain_matches(header.sender_domain, BASE_SECURITY_DOMAINS)
+        or any(p.security_text_re and p.security_text_re.search(combined) for p in packs)
     )
     is_explicit_bill_sender = any(
-        k in header.sender_domain or k in header.sender_email
-        for k in ("kivra", "fortnox", "bankgirot", "skatteverket", "faktura", "xdesk", "accounts.google.com", "email.apple.com")
+        k in sender_domain_low or k in sender_email_low for k in explicit_bill_senders
     )
-    has_critical_bill = bool(CRITICAL_BILL_TERMS_RE.search(combined))
-    is_retail_promo_noise = bool(STRONG_RETAIL_PROMO_RE.search(combined)) and not has_critical_bill and not extracted.pdf_attachments
+    has_critical_bill = bool(
+        CRITICAL_BILL_TERMS_RE.search(combined)
+        or any(p.critical_bill_terms_re and p.critical_bill_terms_re.search(combined) for p in packs)
+    )
+    has_retail_promo = bool(
+        STRONG_RETAIL_PROMO_RE.search(combined)
+        or any(p.retail_promo_re and p.retail_promo_re.search(combined) for p in packs)
+    )
+    is_retail_promo_noise = has_retail_promo and not has_critical_bill and not extracted.pdf_attachments
 
-    if (is_explicit_bill_sender or extracted.pdf_attachments or is_security or (bill_kw and not is_retail_promo_noise)):
+    if is_explicit_bill_sender or extracted.pdf_attachments or is_security or (bill_kw and not is_retail_promo_noise):
         allowed = _base_allowed_actions(header, extracted, "attention", catchup_mode=catchup_mode)
+        matched_gov_pack = next(
+            (
+                p
+                for p in packs
+                if p.gov_domain_token
+                and (p.gov_domain_token in combined or p.gov_domain_token in sender_domain_low)
+            ),
+            None,
+        )
         if is_security:
             subcat = "Security Alert"
             badges.append("Security")
-        elif "kivra" in combined or "kivra" in header.sender_domain:
-            subcat = "Gov / Kivra"
-            badges.append("Kivra")
+        elif matched_gov_pack is not None:
+            subcat = matched_gov_pack.gov_subcategory
+            badges.append(matched_gov_pack.gov_badge)
         else:
             subcat = "Bill / Invoice"
             badges.append("Invoice" if extracted.pdf_attachments else "Billing / Admin")
@@ -283,15 +314,13 @@ def classify_email(
             reason="GitHub notification from human contributor",
         )
 
-    # 5. Creator / Project Updates & Human Comment Replies
+    # 5. Wanted Creator / Project Updates & Comment Replies
     is_wanted_domain = _domain_matches(header.sender_domain, config.wanted_domains)
-    is_reddit_reply = _domain_matches(header.sender_domain, ["redditmail.com", "reddit.com"]) and bool(
-        REDDIT_COMMENT_RE.search(header.subject)
-    )
-    if is_wanted_domain or is_reddit_reply:
+    if is_wanted_domain:
         allowed = _base_allowed_actions(header, extracted, "updates", catchup_mode=catchup_mode)
-        subcat = "Comment Reply" if is_reddit_reply else "Creator Update"
-        badges.append("Comment" if is_reddit_reply else "Wanted Update")
+        is_comment = bool(COMMENT_REPLY_RE.search(header.subject))
+        subcat = "Comment Reply" if is_comment else "Creator Update"
+        badges.append("Comment" if is_comment else "Wanted Update")
         if catchup_mode:
             default_act = "no_action"
         elif header.is_read:
@@ -311,12 +340,17 @@ def classify_email(
             allowed_actions=allowed,
             badges=badges,
             archive_mailbox=archive_mailbox,
-            reason="Matched wanted project/creator/comment rule",
+            reason="Matched wanted domain rule",
         )
 
     # 6. Transactional Delivery / Order Notifications (archive only, never auto-unsub)
-    is_transactional = _domain_matches(header.sender_domain, config.transactional_domains) or bool(
-        re.search(r"\b(?:leverans|skickas\s+nu|beställning\s+är\s+packad|tack\s+för\s+din\s+beställning|tracking\s+number)\b", combined)
+    effective_tx_domains = list(config.transactional_domains)
+    for pack in packs:
+        effective_tx_domains.extend(pack.transactional_domains)
+    is_transactional = (
+        _domain_matches(header.sender_domain, effective_tx_domains)
+        or bool(BASE_TRANSACTIONAL_RE.search(combined))
+        or any(p.transactional_text_re and p.transactional_text_re.search(combined) for p in packs)
     )
     if is_transactional:
         allowed = _base_allowed_actions(header, extracted, "newsletters", catchup_mode=catchup_mode)
