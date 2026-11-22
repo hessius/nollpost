@@ -210,10 +210,21 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        async def _preload_inbox() -> None:
+            try:
+                await runtime.get_snapshot(mode="inbox", refresh=True)
+            except Exception:
+                pass
+
         if preload:
-            await runtime.get_snapshot(mode="inbox", refresh=True)
+            preload_task = asyncio.create_task(_preload_inbox())
+            runtime.background_tasks.add(preload_task)
+            preload_task.add_done_callback(runtime.background_tasks.discard)
+            # Yield once so preload acquires scan_lock before browser requests arrive
+            await asyncio.sleep(0)
         if open_browser_url:
-            subprocess.Popen(["open", open_browser_url])
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.25, subprocess.Popen, ["open", open_browser_url])
         try:
             yield
         finally:

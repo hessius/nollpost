@@ -35,6 +35,8 @@ def scan_paths(paths: list[Path], repo_root: Path) -> list[str]:
             violations.append(f"{rel}: tracked sensitive config/env filename")
             continue
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+            if path.suffix.lower() == ".png" and rel.startswith("docs/screenshots/"):
+                continue
             violations.append(f"{rel}: tracked binary/state file ({path.suffix})")
             continue
         try:

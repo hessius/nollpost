@@ -466,7 +466,7 @@ async def run_playwright_action(
                     return PlaywrightOutcome(
                         status="blocked_captcha",
                         final_url=page.url if _is_http_scheme(page.url) else url,
-                        detail="CAPTCHA/anti-bot verification detected — paused for manual browser click",
+                        detail="CAPTCHA/anti-bot verification detected; paused for manual browser click",
                         screenshot_path=str(shot_path),
                     )
 
@@ -512,7 +512,7 @@ async def run_playwright_action(
                 return PlaywrightOutcome(
                     status="blocked_captcha",
                     final_url=page.url if _is_http_scheme(page.url) else url,
-                    detail="CAPTCHA detected after submit — manual completion required",
+                    detail="CAPTCHA detected after submit; manual completion required",
                     screenshot_path=str(shot_path),
                 )
 

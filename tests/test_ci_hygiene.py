@@ -30,14 +30,21 @@ def test_hygiene_scanner_detects_secrets_paths_and_runtime_files(tmp_path: Path)
     )
     ok_src = tmp_path / "clean.py"
     ok_src.write_text('PATH = "/Users/example/test"\n', encoding="utf-8")
+    ok_shot = tmp_path / "docs" / "screenshots" / "demo.png"
+    ok_shot.parent.mkdir(parents=True)
+    ok_shot.write_bytes(b"\x89PNG\r\n")
+    bad_shot = tmp_path / "debug.png"
+    bad_shot.write_bytes(b"\x89PNG\r\n")
 
-    issues = mod.scan_paths([bad_cfg, bad_db, bad_src, ok_src], tmp_path)
+    issues = mod.scan_paths([bad_cfg, bad_db, bad_src, ok_src, ok_shot, bad_shot], tmp_path)
     joined = "\n".join(issues)
     assert "config.toml" in joined
     assert "state.db" in joined
     assert "realperson" in joined
     assert "GitHub fine-grained PAT" in joined
+    assert "debug.png" in joined
     assert "clean.py" not in joined
+    assert "demo.png" not in joined
 
 
 def test_repo_passes_hygiene_and_has_ci_workflow():

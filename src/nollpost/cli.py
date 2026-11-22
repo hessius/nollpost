@@ -49,7 +49,7 @@ def _print_briefing_text(snapshot_dict: dict) -> None:
         print("\nTop Attention / Updates / Matches:")
         for h in highlights[:15]:
             read_mark = "[read]" if h["is_read"] else "[NEW]"
-            print(f"  {read_mark} [{h['account']} | {h['subcategory']}] {h['subject']} — {h['sender']}")
+            print(f"  {read_mark} [{h['account']} | {h['subcategory']}] {h['subject']} ({h['sender']})")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             if not entries:
                 print("No unresolved missed-unsub items.")
             for e in entries:
-                print(f"#{e['id']} [{e['stage']}] {e['account']}/{e['mailbox']} id={e['internal_id']} | {e['sender']} — {e['subject']}")
+                print(f"#{e['id']} [{e['stage']}] {e['account']}/{e['mailbox']} id={e['internal_id']} | {e['sender']} | {e['subject']}")
                 print(f"   reason: {e['failure_reason']}")
         return 0
 
@@ -241,6 +241,14 @@ def main(argv: list[str] | None = None) -> int:
             preload=not args.no_preload,
             open_browser_url=None if args.no_open else url,
         )
+        if not args.no_open:
+            print(
+                "Starting Nollpost Review Board and scanning Apple Mail "
+                "(please wait, the panel will open automatically in your browser)...",
+                flush=True,
+            )
+        else:
+            print("Starting Nollpost Review Board (please wait while the local server starts)...", flush=True)
         print(f"Review Board URL: {url}", flush=True)
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
         return 0

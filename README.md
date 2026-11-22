@@ -4,6 +4,21 @@
 
 > **Safety & Privacy First:** Nollpost runs entirely on your Mac (`127.0.0.1` with an ephemeral session token), sends zero emails to external LLMs/APIs, and **never deletes emails** or touches Trash/Junk folders. See [PRIVACY.md](PRIVACY.md) for details.
 
+## Screenshots
+
+*All screenshots below use simulated demo inbox data.*
+
+![Nollpost Review Board showing multi-account triage, lifetime tallies, Safety Tray, and per-email action toggles](docs/screenshots/review-board.png)
+
+<details>
+<summary>More screenshots: Confirmation Preview &amp; Audit Log with one-click Undo Archive</summary>
+
+![Confirmation modal showing 0 deleted emails guarantee, Archive destinations, and Unsubscribe targets](docs/screenshots/confirm-modal.png)
+
+![Audit Log modal showing batch filters, execution outcomes, and one-click Undo Archive](docs/screenshots/audit-log.png)
+
+</details>
+
 ## Requirements
 
 - **macOS** with **Apple Mail** configured (iCloud, Gmail, Fastmail, IMAP, etc.)

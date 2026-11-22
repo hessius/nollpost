@@ -485,3 +485,28 @@ def test_scan_progress_and_ui_safety_controls(tmp_path: Path, monkeypatch):
         assert "Outbound Email Warning" in app_js
         assert "System Settings" in app_js
         assert "/api/scan/status" in app_js
+        assert "\u2014" not in html
+        assert "\u2014" not in app_js
+
+
+def test_serve_startup_nonblocking_preload_and_terminal_guidance(tmp_path: Path, monkeypatch, capsys):
+    _setup_test_env(tmp_path, monkeypatch)
+
+    from nollpost import cli
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    bridge = FakeBridge()
+    app, token = create_app(cfg, store, bridge, token="preload-tok", preload=True)
+    with TestClient(app) as client:
+        st = client.get("/api/state", headers={"X-Triage-Key": token})
+        assert st.status_code == 200
+        assert len(st.json()["items"]) == 3
+
+    monkeypatch.setattr(cli, "AppleMailBridge", lambda **_kw: FakeBridge())
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *a, **kw: None)
+    rc = cli.main(["serve", "--port", "0"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "automatically" in out
+    assert "Review Board URL:" in out
