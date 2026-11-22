@@ -33,6 +33,11 @@
     confirmCallback: null,
     lastJobResults: [],
     loadSeq: 0,
+    rulesFilter: "all",
+    rulesSearch: "",
+    rulesSelectedKeys: new Set(),
+    rulesItems: [],
+    rulesSeq: 0,
   };
 
   const qs = (id) => document.getElementById(id);
@@ -765,10 +770,399 @@
     qs("snapshot-modal").classList.remove("hidden");
   }
 
+  function parseCsvOrLines(raw) {
+    return String(raw || "")
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function parseArchiveMapLines(raw) {
+    const map = {};
+    for (const line of String(raw || "").split("\n")) {
+      const idx = line.indexOf("=");
+      if (idx === -1) continue;
+      const acct = line.slice(0, idx).trim();
+      const box = line.slice(idx + 1).trim();
+      if (acct && box) map[acct] = box;
+    }
+    return map;
+  }
+
+  async function openSettingsModal() {
+    const cfg = await api("/api/settings");
+    const u = cfg.user || {};
+    const a = cfg.accounts || {};
+    const r = cfg.rules || {};
+    const b = cfg.browser || {};
+    const c = cfg.consulting || {};
+    const p = cfg.profile || {};
+
+    const stratOpts = (a.valid_gmail_strategies || ["ui_menu", "two_hop", "tag_staging"])
+      .map((s) => `<option value="${escapeHtml(s)}" ${a.gmail_archive_strategy === s ? "selected" : ""}>${escapeHtml(s)}</option>`)
+      .join("");
+    const packChecks = (r.available_packs || [])
+      .map((pk) => {
+        const checked = (r.enabled_packs || []).includes(pk.name) ? "checked" : "";
+        return `<label class="toggle-check" title="${escapeHtml(pk.description)}">
+          <input type="checkbox" class="cfg-pack-cb" value="${escapeHtml(pk.name)}" ${checked} />
+          <span>${escapeHtml(pk.name)} — ${escapeHtml(pk.description)}</span>
+        </label>`;
+      })
+      .join("");
+    const archLines = Object.entries(a.archive_map || {})
+      .map(([acct, box]) => `${acct} = ${box}`)
+      .join("\n");
+    const acctPlaceholder = (a.known_accounts || []).length
+      ? (a.known_accounts || []).map((k) => `${k} = Archive`).join("\n")
+      : "iCloud = Archive";
+
+    qs("snap-title").textContent = "Nollpost Settings";
+    qs("snap-body").innerHTML = `
+      <div style="font-size:11px;color:var(--text-secondary);">Config file: <code>${escapeHtml(cfg.config_path || "")}</code></div>
+      <div class="preview-box" style="max-height:none;">
+        <strong>Scan &amp; Archiving</strong>
+        <div class="settings-grid" style="margin-top:8px;">
+          <div class="settings-field">
+            <label for="cfg-max-inbox">Max Inbox Messages (1–5000)</label>
+            <input id="cfg-max-inbox" type="number" min="1" max="5000" value="${Number(u.max_inbox_messages || 500)}" />
+          </div>
+          <div class="settings-field">
+            <label for="cfg-catchup-limit">Catch-Up Scan Limit (1–5000)</label>
+            <input id="cfg-catchup-limit" type="number" min="1" max="5000" value="${Number(u.catchup_scan_limit || 200)}" />
+          </div>
+          <div class="settings-field">
+            <label for="cfg-catchup-days">Catch-Up Days Back (1–365)</label>
+            <input id="cfg-catchup-days" type="number" min="1" max="365" value="${Number(u.catchup_days_back || 14)}" />
+          </div>
+          <div class="settings-field">
+            <label for="cfg-gmail-strategy">Gmail Archive Strategy</label>
+            <select id="cfg-gmail-strategy">${stratOpts}</select>
+          </div>
+        </div>
+        <div style="margin-top:8px;">
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-mark-read" ${u.mark_read_on_archive !== false ? "checked" : ""} />
+            <span>Mark messages as read when archiving</span>
+          </label>
+        </div>
+        <div class="settings-field" style="margin-top:8px;">
+          <label for="cfg-archive-map">Per-Account Archive Overrides (one <code>Account = Mailbox</code> per line; Trash/Junk blocked)</label>
+          <textarea id="cfg-archive-map" placeholder="${escapeHtml(acctPlaceholder)}">${escapeHtml(archLines)}</textarea>
+        </div>
+      </div>
+
+      <div class="preview-box" style="max-height:none;">
+        <strong>Domains, Keywords &amp; Rule Packs</strong>
+        <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px;">${packChecks || "<em>No built-in packs found</em>"}</div>
+        <div class="settings-grid" style="margin-top:8px;">
+          <div class="settings-field">
+            <label for="cfg-wanted-domains">Wanted Domains (comma or newline separated)</label>
+            <textarea id="cfg-wanted-domains">${escapeHtml((p.wanted_domains || []).join(", "))}</textarea>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-bill-keywords">Bill &amp; Finance Keywords</label>
+            <textarea id="cfg-bill-keywords">${escapeHtml((p.bill_keywords || []).join(", "))}</textarea>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-transactional-domains">Transactional / Delivery Domains</label>
+            <textarea id="cfg-transactional-domains">${escapeHtml((p.transactional_domains || []).join(", "))}</textarea>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-browser-locale">Browser Locale Override (blank = ${escapeHtml(b.effective_locale || "en-US")})</label>
+            <input id="cfg-browser-locale" type="text" value="${escapeHtml(b.locale || "")}" placeholder="e.g. sv-SE or en-US" />
+            <label for="cfg-accept-lang" style="margin-top:4px;">Accept-Language Override</label>
+            <input id="cfg-accept-lang" type="text" value="${escapeHtml(b.accept_language || "")}" placeholder="${escapeHtml(b.effective_accept_language || "en-US,en;q=0.9")}" />
+          </div>
+        </div>
+      </div>
+
+      <div class="preview-box" style="max-height:none;">
+        <strong>Consulting Outreach</strong>
+        <div style="margin-top:6px;">
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-consult-enabled" ${c.enabled ? "checked" : ""} />
+            <span>Enable Consulting Outreach classification</span>
+          </label>
+        </div>
+        <div class="settings-grid" style="margin-top:8px;">
+          <div class="settings-field">
+            <label for="cfg-consult-networks">Consulting Networks</label>
+            <textarea id="cfg-consult-networks">${escapeHtml((c.networks || []).join(", "))}</textarea>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-consult-match">Match Keywords</label>
+            <textarea id="cfg-consult-match">${escapeHtml((c.match_keywords || []).join(", "))}</textarea>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-consult-negative">Negative Keywords</label>
+            <textarea id="cfg-consult-negative">${escapeHtml((c.negative_keywords || []).join(", "))}</textarea>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-consult-boilerplate">Decline Boilerplate</label>
+            <textarea id="cfg-consult-boilerplate">${escapeHtml(c.decline_boilerplate || "")}</textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-footer">
+        <span id="settings-status" class="modal-status">Changes save to config.toml and apply on the next scan without restarting.</span>
+        <button class="btn small primary" id="btn-save-settings">Save Settings &amp; Rescan</button>
+      </div>
+    `;
+    qs("snapshot-modal").classList.remove("hidden");
+  }
+
+  function formatSenderRuleStatus(row) {
+    const tags = [];
+    if (row.preferred_action === "always_keep") tags.push(`<span class="pill green">Always Keep</span>`);
+    else if (row.preferred_action === "archive") tags.push(`<span class="pill accent">Always Archive</span>`);
+    else if (row.preferred_action === "mark_read") tags.push(`<span class="pill muted">Always Mark Read</span>`);
+    if (row.unsubscribed_at || row.unsub_count > 0) {
+      tags.push(`<span class="pill warn">Unsubscribed ×${Number(row.unsub_count || 0)}</span>`);
+    }
+    if (!tags.length) tags.push(`<span class="pill muted">Seen</span>`);
+    return tags.join(" ");
+  }
+
+  async function refreshSenderRulesData({ rowsOnly = false } = {}) {
+    const seq = ++state.rulesSeq;
+    const params = new URLSearchParams({
+      search: state.rulesSearch || "",
+      kind: state.rulesFilter || "all",
+    });
+    const res = await api(`/api/sender-memory?${params.toString()}`);
+    if (seq !== state.rulesSeq) return;
+    state.rulesItems = res.items || [];
+    const valid = new Set(state.rulesItems.map((r) => r.sender_key));
+    state.rulesSelectedKeys = new Set([...state.rulesSelectedKeys].filter((k) => valid.has(k)));
+    if (rowsOnly && qs("rules-tbody")) {
+      renderSenderRulesRowsOnly();
+    } else {
+      renderSenderRulesModalBody();
+    }
+  }
+
+  function renderSenderRulesRowsHtml(items) {
+    return items.length
+      ? items
+          .map((r) => {
+            const chk = state.rulesSelectedKeys.has(r.sender_key) ? "checked" : "";
+            return `<tr>
+              <td style="width:28px;"><input type="checkbox" class="rules-row-cb" data-sender-key="${escapeHtml(r.sender_key)}" ${chk} /></td>
+              <td>
+                <strong>${escapeHtml(r.sender_key)}</strong>
+                ${r.display_name ? `<div class="sub-meta">${escapeHtml(r.display_name)}</div>` : ""}
+              </td>
+              <td>${formatSenderRuleStatus(r)}</td>
+              <td style="font-size:11px;color:var(--text-secondary);">${escapeHtml((r.last_seen_at || "").slice(0, 16).replace("T", " "))}</td>
+              <td>
+                <select class="pref-select rule-edit-select" data-rule-key="${escapeHtml(r.sender_key)}">
+                  <option value="">Change…</option>
+                  <option value="always_keep">Always Keep</option>
+                  <option value="archive">Always Archive</option>
+                  <option value="mark_read">Always Mark Read</option>
+                  <option value="clear">Clear Learned Rule</option>
+                  <option value="delete">Delete Entry</option>
+                </select>
+              </td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:16px;">No sender memory records match the current filter.</td></tr>`;
+  }
+
+  function renderSenderRulesRowsOnly() {
+    const items = state.rulesItems || [];
+    const allSel = items.length > 0 && items.every((r) => state.rulesSelectedKeys.has(r.sender_key));
+    qs("snap-title").textContent = `Sender Rules & Memory (${items.length})`;
+    const tbody = qs("rules-tbody");
+    if (tbody) tbody.innerHTML = renderSenderRulesRowsHtml(items);
+    const mcb = qs("rules-master-cb");
+    if (mcb instanceof HTMLInputElement) mcb.checked = allSel;
+    const bulkBtn = qs("btn-rules-bulk-apply");
+    if (bulkBtn instanceof HTMLButtonElement) bulkBtn.disabled = state.rulesSelectedKeys.size === 0;
+    const bulkSel = qs("rules-bulk-action");
+    if (bulkSel instanceof HTMLSelectElement && bulkSel.options.length > 0) {
+      bulkSel.options[0].textContent = `Bulk action on ${state.rulesSelectedKeys.size} selected…`;
+    }
+  }
+
+  function renderSenderRulesModalBody() {
+    const kinds = [
+      { id: "all", label: "All" },
+      { id: "always_keep", label: "Always Keep" },
+      { id: "archive", label: "Always Archive" },
+      { id: "mark_read", label: "Always Mark Read" },
+      { id: "unsubscribed", label: "Unsubscribed" },
+    ];
+    const filterHtml = kinds
+      .map(
+        (k) =>
+          `<button class="tab ${state.rulesFilter === k.id ? "active" : ""}" data-rules-kind="${k.id}">${escapeHtml(k.label)}</button>`
+      )
+      .join("");
+    const items = state.rulesItems || [];
+    const allSel = items.length > 0 && items.every((r) => state.rulesSelectedKeys.has(r.sender_key));
+    const rowsHtml = renderSenderRulesRowsHtml(items);
+
+    qs("snap-title").textContent = `Sender Rules & Memory (${items.length})`;
+    qs("snap-body").innerHTML = `
+      <div class="rules-toolbar">
+        <div class="tabs">${filterHtml}</div>
+        <input type="search" id="rules-search-input" class="search-box" value="${escapeHtml(state.rulesSearch)}" placeholder="Search sender or display name…" />
+      </div>
+      <div class="rules-toolbar">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="rules-bulk-action" class="pref-select" style="font-size:12px;padding:4px 8px;">
+            <option value="">Bulk action on ${state.rulesSelectedKeys.size} selected…</option>
+            <option value="always_keep">Set Always Keep</option>
+            <option value="archive">Set Always Archive</option>
+            <option value="mark_read">Set Always Mark Read</option>
+            <option value="clear">Clear Learned Rules</option>
+            <option value="delete">Delete Entries Completely</option>
+          </select>
+          <button class="btn small secondary" id="btn-rules-bulk-apply" ${state.rulesSelectedKeys.size === 0 ? "disabled" : ""}>Apply Bulk Action</button>
+        </div>
+        <span id="rules-status" class="modal-status"></span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="rules-master-cb" ${allSel ? "checked" : ""} /></th>
+              <th>Sender</th>
+              <th>Rule / History</th>
+              <th>Last Seen</th>
+              <th>Edit</th>
+            </tr>
+          </thead>
+          <tbody id="rules-tbody">${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+    qs("snapshot-modal").classList.remove("hidden");
+  }
+
+  async function openSenderRulesModal() {
+    await refreshSenderRulesData();
+  }
+
+  async function applySenderMemoryUpdate(keys, action) {
+    await api("/api/sender-memory/bulk", {
+      method: "POST",
+      body: JSON.stringify({ sender_keys: keys, action }),
+    });
+    const keySet = new Set(keys.map((k) => k.toLowerCase()));
+    for (const item of state.data?.items || []) {
+      const eml = (item.header?.sender_email || "").toLowerCase();
+      const dom = (item.header?.sender_domain || "").toLowerCase();
+      if (keySet.has(eml) || keySet.has(dom)) {
+        state.actionsByUid.delete(item.uid);
+      }
+    }
+    await refreshSenderRulesData();
+    await loadState(false);
+  }
+
   document.addEventListener("click", async (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLElement)) return;
     try {
+      if (t.id === "btn-save-settings") {
+        const statusEl = qs("settings-status");
+        const saveBtn = t instanceof HTMLButtonElement ? t : null;
+        if (saveBtn) saveBtn.disabled = true;
+        if (statusEl) {
+          statusEl.className = "modal-status";
+          statusEl.textContent = "Saving settings…";
+        }
+        try {
+          const packs = [...document.querySelectorAll(".cfg-pack-cb:checked")].map((el) => el.value);
+          const payload = {
+            user: {
+              mark_read_on_archive: Boolean(qs("cfg-mark-read")?.checked),
+              max_inbox_messages: Number(qs("cfg-max-inbox")?.value || 500),
+              catchup_scan_limit: Number(qs("cfg-catchup-limit")?.value || 200),
+              catchup_days_back: Number(qs("cfg-catchup-days")?.value || 14),
+            },
+            accounts: {
+              gmail_archive_strategy: qs("cfg-gmail-strategy")?.value || "ui_menu",
+              archive_map: parseArchiveMapLines(qs("cfg-archive-map")?.value || ""),
+            },
+            rules: {
+              enabled_packs: packs,
+            },
+            browser: {
+              locale: (qs("cfg-browser-locale")?.value || "").trim(),
+              accept_language: (qs("cfg-accept-lang")?.value || "").trim(),
+            },
+            consulting: {
+              enabled: Boolean(qs("cfg-consult-enabled")?.checked),
+              networks: parseCsvOrLines(qs("cfg-consult-networks")?.value || ""),
+              match_keywords: parseCsvOrLines(qs("cfg-consult-match")?.value || ""),
+              negative_keywords: parseCsvOrLines(qs("cfg-consult-negative")?.value || ""),
+              decline_boilerplate: qs("cfg-consult-boilerplate")?.value || "",
+            },
+            profile: {
+              wanted_domains: parseCsvOrLines(qs("cfg-wanted-domains")?.value || ""),
+              bill_keywords: parseCsvOrLines(qs("cfg-bill-keywords")?.value || ""),
+              transactional_domains: parseCsvOrLines(qs("cfg-transactional-domains")?.value || ""),
+            },
+          };
+          await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+          qs("snapshot-modal").classList.add("hidden");
+          await loadState(true);
+        } catch (saveErr) {
+          if (statusEl) {
+            statusEl.className = "modal-status err";
+            statusEl.textContent = `Save failed: ${saveErr.message}`;
+          }
+        } finally {
+          if (saveBtn) saveBtn.disabled = false;
+        }
+        return;
+      }
+      if (t.dataset.rulesKind) {
+        state.rulesFilter = t.dataset.rulesKind;
+        await refreshSenderRulesData();
+        return;
+      }
+      if (t.id === "btn-rules-bulk-apply") {
+        const actionEl = qs("rules-bulk-action");
+        const act = actionEl instanceof HTMLSelectElement ? actionEl.value : "";
+        const keys = [...state.rulesSelectedKeys];
+        const statusEl = qs("rules-status");
+        if (!act || !keys.length) return;
+        const runBulk = async () => {
+          await applySenderMemoryUpdate(keys, act);
+          const nextStatus = qs("rules-status");
+          if (nextStatus) {
+            nextStatus.className = "modal-status ok";
+            nextStatus.textContent = `Updated ${keys.length} sender(s).`;
+          }
+        };
+        if (act === "delete") {
+          qs("modal-title").textContent = `Delete ${keys.length} Sender Memory Entries`;
+          qs("modal-body").innerHTML = `<div class="confirm-warning warn">Remove <strong>${keys.length}</strong> sender record(s) from SQLite <code>sender_memory</code>? Learned rules and unsubscribe cooldown history for these senders will be reset.</div>`;
+          qs("modal-confirm").disabled = false;
+          qs("confirm-modal").classList.remove("hidden");
+          state.confirmCallback = async () => {
+            qs("confirm-modal").classList.add("hidden");
+            await runBulk();
+          };
+        } else {
+          try {
+            await runBulk();
+          } catch (bulkErr) {
+            if (statusEl) {
+              statusEl.className = "modal-status err";
+              statusEl.textContent = bulkErr.message;
+            }
+          }
+        }
+        return;
+      }
       if (t.id === "btn-reset-filters") {
         state.category = "all";
         state.account = "all";
@@ -945,8 +1339,46 @@
         await loadState(false);
         return;
       }
+      if (t.id === "rules-master-cb" && t instanceof HTMLInputElement) {
+        for (const row of state.rulesItems || []) {
+          if (t.checked) state.rulesSelectedKeys.add(row.sender_key);
+          else state.rulesSelectedKeys.delete(row.sender_key);
+        }
+        renderSenderRulesModalBody();
+        return;
+      }
+      if (t.classList.contains("rules-row-cb") && t instanceof HTMLInputElement && t.dataset.senderKey) {
+        if (t.checked) state.rulesSelectedKeys.add(t.dataset.senderKey);
+        else state.rulesSelectedKeys.delete(t.dataset.senderKey);
+        renderSenderRulesModalBody();
+        return;
+      }
+      if (t.classList.contains("rule-edit-select") && t instanceof HTMLSelectElement && t.value && t.dataset.ruleKey) {
+        const key = t.dataset.ruleKey;
+        const act = t.value;
+        t.value = "";
+        await applySenderMemoryUpdate([key], act);
+        const nextStatus = qs("rules-status");
+        if (nextStatus) {
+          nextStatus.className = "modal-status ok";
+          nextStatus.textContent = `Updated ${key}.`;
+        }
+        return;
+      }
     } catch (err) {
       showError(err.message);
+    }
+  });
+
+  document.addEventListener("input", async (ev) => {
+    const t = ev.target;
+    if (t instanceof HTMLInputElement && t.id === "rules-search-input") {
+      state.rulesSearch = t.value;
+      try {
+        await refreshSenderRulesData({ rowsOnly: true });
+      } catch (err) {
+        showError(err.message);
+      }
     }
   });
 
@@ -994,8 +1426,46 @@
         await loadState(false);
         return;
       }
+      if (t.id === "rules-master-cb" && t instanceof HTMLInputElement) {
+        for (const row of state.rulesItems || []) {
+          if (t.checked) state.rulesSelectedKeys.add(row.sender_key);
+          else state.rulesSelectedKeys.delete(row.sender_key);
+        }
+        renderSenderRulesModalBody();
+        return;
+      }
+      if (t.classList.contains("rules-row-cb") && t instanceof HTMLInputElement && t.dataset.senderKey) {
+        if (t.checked) state.rulesSelectedKeys.add(t.dataset.senderKey);
+        else state.rulesSelectedKeys.delete(t.dataset.senderKey);
+        renderSenderRulesModalBody();
+        return;
+      }
+      if (t.classList.contains("rule-edit-select") && t instanceof HTMLSelectElement && t.value && t.dataset.ruleKey) {
+        const key = t.dataset.ruleKey;
+        const act = t.value;
+        t.value = "";
+        await applySenderMemoryUpdate([key], act);
+        const nextStatus = qs("rules-status");
+        if (nextStatus) {
+          nextStatus.className = "modal-status ok";
+          nextStatus.textContent = `Updated ${key}.`;
+        }
+        return;
+      }
     } catch (err) {
       showError(err.message);
+    }
+  });
+
+  document.addEventListener("input", async (ev) => {
+    const t = ev.target;
+    if (t instanceof HTMLInputElement && t.id === "rules-search-input") {
+      state.rulesSearch = t.value;
+      try {
+        await refreshSenderRulesData({ rowsOnly: true });
+      } catch (err) {
+        showError(err.message);
+      }
     }
   });
 
@@ -1004,6 +1474,8 @@
     render();
   });
   qs("refresh-btn").addEventListener("click", () => loadState(true).catch((e) => showError(e.message)));
+  qs("sender-rules-btn").addEventListener("click", () => openSenderRulesModal().catch((e) => showError(e.message)));
+  qs("settings-btn").addEventListener("click", () => openSettingsModal().catch((e) => showError(e.message)));
   qs("help-btn").addEventListener("click", () => showQuickGuideModal());
   qs("btn-reset-actions").addEventListener("click", () => {
     for (const item of filteredItems()) {

@@ -291,6 +291,62 @@ class TriageStore:
                 )
             return first_time
 
+    def list_sender_memory(
+        self,
+        *,
+        search: str = "",
+        filter_kind: str = "all",
+    ) -> list[dict[str, Any]]:
+        """Return learned sender rules and unsubscribe history ordered by last_seen_at DESC."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sender_memory ORDER BY last_seen_at DESC, sender_key ASC"
+            ).fetchall()
+        needle = search.strip().lower()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            pref = row["preferred_action"]
+            keep = bool(row["keep_subscribed"])
+            unsub_at = row["unsubscribed_at"]
+            unsub_cnt = int(row["unsub_count"])
+            if filter_kind == "always_keep" and pref != "always_keep":
+                continue
+            elif filter_kind == "archive" and pref != "archive":
+                continue
+            elif filter_kind == "mark_read" and pref != "mark_read":
+                continue
+            elif filter_kind == "unsubscribed" and not (unsub_at or unsub_cnt > 0):
+                continue
+            elif filter_kind == "learned" and not (pref or keep):
+                continue
+            key = row["sender_key"]
+            disp = row["display_name"]
+            if needle and needle not in key.lower() and needle not in disp.lower():
+                continue
+            out.append({
+                "sender_key": key,
+                "display_name": disp,
+                "preferred_action": pref,
+                "keep_subscribed": keep,
+                "unsubscribed_at": unsub_at,
+                "unsub_count": unsub_cnt,
+                "last_seen_at": row["last_seen_at"],
+            })
+        return out
+
+    def delete_sender_memory(self, sender_keys: list[str]) -> int:
+        """Delete entries from sender_memory and return number of deleted rows."""
+        cleaned = [self.normalize_sender_key(k) for k in sender_keys if str(k).strip()]
+        if not cleaned:
+            return 0
+        with self._conn() as conn:
+            placeholders = ",".join("?" for _ in cleaned)
+            cur = conn.execute(
+                f"DELETE FROM sender_memory WHERE sender_key IN ({placeholders})",
+                cleaned,
+            )
+            return int(cur.rowcount)
+
     def add_opened_tray_item(
         self,
         *,

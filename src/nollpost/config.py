@@ -8,7 +8,7 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from nollpost.packs import resolve_packs
 
@@ -189,9 +189,13 @@ def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def load_config(ensure_files: bool = True) -> TriageConfig:
+def load_config(
+    ensure_files: bool = True,
+    *,
+    config_path: Optional[Path] = None,
+) -> TriageConfig:
     """Load config from TOML, creating default config and state directories if needed."""
-    config_path = get_config_path()
+    resolved_config_path = config_path or get_config_path()
     data_dir = get_data_dir()
     cache_dir = get_cache_dir()
     db_path = data_dir / "state.db"
@@ -199,17 +203,17 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
     screenshots_dir = data_dir / "screenshots"
 
     if ensure_files:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_config_path.parent.mkdir(parents=True, exist_ok=True)
         data_dir.mkdir(parents=True, exist_ok=True)
         invoices_dir.mkdir(parents=True, exist_ok=True)
         screenshots_dir.mkdir(parents=True, exist_ok=True)
-        if not config_path.exists():
-            config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
+        if not resolved_config_path.exists():
+            resolved_config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
 
     defaults = tomllib.loads(DEFAULT_CONFIG_TOML)
     user_data: dict[str, Any] = {}
-    if config_path.exists():
-        user_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    if resolved_config_path.exists():
+        user_data = tomllib.loads(resolved_config_path.read_text(encoding="utf-8"))
         merged = _deep_merge(defaults, user_data)
     else:
         merged = defaults
@@ -228,7 +232,7 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
     if patterns_override:
         patterns_path: Optional[Path] = Path(patterns_override).expanduser()
     else:
-        candidate = config_path.parent / "unsub_patterns.toml"
+        candidate = resolved_config_path.parent / "unsub_patterns.toml"
         patterns_path = candidate if candidate.exists() else None
 
     gmail_strategy = str(acct_sec.get("gmail_archive_strategy", "ui_menu")).strip().lower()
@@ -262,7 +266,7 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
         consulting_enabled = bool(consult_sec.get("enabled", False))
 
     return TriageConfig(
-        config_path=config_path,
+        config_path=resolved_config_path,
         data_dir=data_dir,
         cache_dir=cache_dir,
         db_path=db_path,
@@ -289,3 +293,227 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
         transactional_domains=[s.lower() for s in prof_sec["transactional_domains"]],
         bill_keywords=[s.lower() for s in prof_sec["bill_keywords"]],
     )
+
+
+def toml_str(value: str) -> str:
+    """Serialize a Python string as a single-line TOML double-quoted string."""
+    out: list[str] = ['"']
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    for ch in normalized:
+        code = ord(ch)
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif code < 32 or code == 127:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def toml_str_list(values: list[str]) -> str:
+    """Serialize a list of strings as a TOML array."""
+    if not values:
+        return "[]"
+    items = ", ".join(toml_str(v) for v in values)
+    return f"[{items}]"
+
+
+def render_config_toml(data: dict[str, Any]) -> str:
+    """Render structured config dictionary as valid TOML and verify round-trip parse."""
+    user = data["user"]
+    accounts = data["accounts"]
+    archive_map = accounts.get("archive_map", {})
+    rules = data["rules"]
+    browser = data["browser"]
+    consulting = data["consulting"]
+    profile = data["profile"]
+
+    lines = [
+        "# nollpost configuration",
+        "",
+        "[user]",
+        f"display_name = {toml_str(str(user.get('display_name', '')))}",
+        f"mark_read_on_archive = {'true' if user.get('mark_read_on_archive', True) else 'false'}",
+        f"max_inbox_messages = {int(user.get('max_inbox_messages', 500))}",
+        f"catchup_scan_limit = {int(user.get('catchup_scan_limit', 200))}",
+        f"catchup_days_back = {int(user.get('catchup_days_back', 14))}",
+        "",
+        "[accounts]",
+        f"gmail_archive_strategy = {toml_str(str(accounts.get('gmail_archive_strategy', 'ui_menu')))}",
+        "",
+        "[accounts.archive_map]",
+    ]
+    for acct_name, box_name in archive_map.items():
+        lines.append(f"{toml_str(str(acct_name))} = {toml_str(str(box_name))}")
+
+    lines.extend(
+        [
+            "",
+            "[rules]",
+            f"enabled_packs = {toml_str_list([str(x) for x in rules.get('enabled_packs', [])])}",
+            "",
+            "[browser]",
+            f"locale = {toml_str(str(browser.get('locale', '')))}",
+            f"accept_language = {toml_str(str(browser.get('accept_language', '')))}",
+            "",
+            "[consulting]",
+            f"enabled = {'true' if consulting.get('enabled', False) else 'false'}",
+            f"networks = {toml_str_list([str(x) for x in consulting.get('networks', [])])}",
+            f"match_keywords = {toml_str_list([str(x) for x in consulting.get('match_keywords', [])])}",
+            f"negative_keywords = {toml_str_list([str(x) for x in consulting.get('negative_keywords', [])])}",
+            f"decline_boilerplate = {toml_str(str(consulting.get('decline_boilerplate', '')))}",
+            "",
+            "[profile]",
+            f"wanted_domains = {toml_str_list([str(x) for x in profile.get('wanted_domains', [])])}",
+            f"bot_senders = {toml_str_list([str(x) for x in profile.get('bot_senders', [])])}",
+            f"transactional_domains = {toml_str_list([str(x) for x in profile.get('transactional_domains', [])])}",
+            f"bill_keywords = {toml_str_list([str(x) for x in profile.get('bill_keywords', [])])}",
+            "",
+        ]
+    )
+    rendered = "\n".join(lines)
+    tomllib.loads(rendered)
+    return rendered
+
+
+def _normalize_str_list(values: list[str], *, lowercase: bool = True) -> list[str]:
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for raw in values:
+        item = str(raw).strip()
+        if lowercase:
+            item = item.lower()
+        if item and item not in seen:
+            seen.add(item)
+            cleaned.append(item)
+    return cleaned
+
+
+def _validate_int_range(name: str, value: Any, lo: int, hi: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer between {lo} and {hi}")
+    try:
+        num = int(value)
+    except (TypeError, ValueError) as err:
+        raise ValueError(f"{name} must be an integer between {lo} and {hi}") from err
+    if not (lo <= num <= hi):
+        raise ValueError(f"{name} must be between {lo} and {hi}")
+    return num
+
+
+def update_config_file(
+    config_path: Path,
+    updates: dict[str, Any],
+    *,
+    archive_validator: Optional[Callable[[str], str]] = None,
+) -> TriageConfig:
+    """Validate and persist updated settings into `config_path`, returning freshly loaded config."""
+    defaults = tomllib.loads(DEFAULT_CONFIG_TOML)
+    user_data: dict[str, Any] = {}
+    if config_path.exists():
+        user_data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    merged = _deep_merge(defaults, user_data)
+
+    # Preserve effective legacy consulting fields when saving other sections
+    resolved_existing = load_config(ensure_files=False, config_path=config_path)
+    merged["consulting"].setdefault("enabled", resolved_existing.consulting_enabled)
+    if not merged["consulting"].get("networks") and resolved_existing.consulting_networks:
+        merged["consulting"]["networks"] = list(resolved_existing.consulting_networks)
+    if not merged["consulting"].get("match_keywords") and resolved_existing.consulting_match_keywords:
+        merged["consulting"]["match_keywords"] = list(resolved_existing.consulting_match_keywords)
+    if not merged["consulting"].get("negative_keywords") and resolved_existing.consulting_negative_keywords:
+        merged["consulting"]["negative_keywords"] = list(resolved_existing.consulting_negative_keywords)
+    if resolved_existing.consulting_decline_boilerplate:
+        merged["consulting"]["decline_boilerplate"] = resolved_existing.consulting_decline_boilerplate
+
+    if "user" in updates and isinstance(updates["user"], dict):
+        u = updates["user"]
+        if "display_name" in u:
+            merged["user"]["display_name"] = str(u["display_name"]).strip()
+        if "mark_read_on_archive" in u:
+            merged["user"]["mark_read_on_archive"] = bool(u["mark_read_on_archive"])
+        if "max_inbox_messages" in u:
+            merged["user"]["max_inbox_messages"] = _validate_int_range(
+                "max_inbox_messages", u["max_inbox_messages"], 1, 5000
+            )
+        if "catchup_scan_limit" in u:
+            merged["user"]["catchup_scan_limit"] = _validate_int_range(
+                "catchup_scan_limit", u["catchup_scan_limit"], 1, 5000
+            )
+        if "catchup_days_back" in u:
+            merged["user"]["catchup_days_back"] = _validate_int_range(
+                "catchup_days_back", u["catchup_days_back"], 1, 365
+            )
+
+    if "accounts" in updates and isinstance(updates["accounts"], dict):
+        a = updates["accounts"]
+        if "gmail_archive_strategy" in a:
+            strat = str(a["gmail_archive_strategy"]).strip().lower()
+            if strat not in VALID_GMAIL_ARCHIVE_STRATEGIES:
+                raise ValueError(
+                    f"Invalid gmail_archive_strategy {strat!r}; expected one of {', '.join(VALID_GMAIL_ARCHIVE_STRATEGIES)}"
+                )
+            merged["accounts"]["gmail_archive_strategy"] = strat
+        if "archive_map" in a:
+            raw_map = a["archive_map"]
+            if not isinstance(raw_map, dict):
+                raise ValueError("archive_map must be a key-value mapping")
+            clean_map: dict[str, str] = {}
+            for k, v in raw_map.items():
+                acct = str(k).strip()
+                dest = str(v).strip()
+                if not acct or not dest:
+                    continue
+                if archive_validator is not None:
+                    dest = archive_validator(dest)
+                clean_map[acct] = dest
+            merged["accounts"]["archive_map"] = clean_map
+
+    if "rules" in updates and isinstance(updates["rules"], dict):
+        r = updates["rules"]
+        if "enabled_packs" in r:
+            packs = _normalize_str_list(list(r["enabled_packs"]), lowercase=True)
+            merged["rules"]["enabled_packs"] = [p.name for p in resolve_packs(packs)]
+
+    if "browser" in updates and isinstance(updates["browser"], dict):
+        b = updates["browser"]
+        if "locale" in b:
+            loc = str(b["locale"]).strip()
+            if loc and not _BCP47_LOCALE_RE.fullmatch(loc):
+                raise ValueError(f"Invalid browser locale {loc!r}; expected BCP-47 tag such as 'en-US' or 'sv-SE'")
+            merged["browser"]["locale"] = loc
+        if "accept_language" in b:
+            merged["browser"]["accept_language"] = str(b["accept_language"]).strip()
+
+    if "consulting" in updates and isinstance(updates["consulting"], dict):
+        c = updates["consulting"]
+        if "enabled" in c:
+            merged["consulting"]["enabled"] = bool(c["enabled"])
+        if "networks" in c:
+            merged["consulting"]["networks"] = _normalize_str_list(list(c["networks"]))
+        if "match_keywords" in c:
+            merged["consulting"]["match_keywords"] = _normalize_str_list(list(c["match_keywords"]))
+        if "negative_keywords" in c:
+            merged["consulting"]["negative_keywords"] = _normalize_str_list(list(c["negative_keywords"]))
+        if "decline_boilerplate" in c:
+            merged["consulting"]["decline_boilerplate"] = str(c["decline_boilerplate"])
+
+    if "profile" in updates and isinstance(updates["profile"], dict):
+        p = updates["profile"]
+        for key in ("wanted_domains", "bot_senders", "transactional_domains", "bill_keywords"):
+            if key in p:
+                merged["profile"][key] = _normalize_str_list(list(p[key]))
+
+    rendered = render_config_toml(merged)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = config_path.with_suffix(".toml.tmp")
+    tmp_path.write_text(rendered, encoding="utf-8")
+    tmp_path.replace(config_path)
+    return load_config(ensure_files=False, config_path=config_path)

@@ -7,6 +7,7 @@ import hmac
 import re
 import secrets
 import subprocess
+import tomllib
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -18,11 +19,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from nollpost.config import TriageConfig
+from nollpost.config import VALID_GMAIL_ARCHIVE_STRATEGIES, TriageConfig, update_config_file
 from nollpost.executor import BatchExecutor
-from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
+from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts, validate_archive_destination
 from nollpost.missed_export import format_missed_bug_report, redact_missed_entry
 from nollpost.models import ClassifiedItem
+from nollpost.packs import BUILTIN_PACKS
 from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.playwright_runner import is_public_http_url, run_playwright_action
 from nollpost.scanner import ScanSnapshot, run_scan
@@ -74,6 +76,21 @@ class MarkUnsubscribedRequest(BaseModel):
     subject: str = ""
     archive: bool = True
     note: str = "Marked as unsubscribed by user"
+
+
+class SettingsUpdateRequest(BaseModel):
+    user: Optional[dict[str, Any]] = None
+    accounts: Optional[dict[str, Any]] = None
+    rules: Optional[dict[str, Any]] = None
+    browser: Optional[dict[str, Any]] = None
+    consulting: Optional[dict[str, Any]] = None
+    profile: Optional[dict[str, Any]] = None
+
+
+class SenderMemoryBulkRequest(BaseModel):
+    sender_keys: list[str]
+    action: str
+    display_name: str = ""
 
 
 @dataclass
@@ -266,6 +283,126 @@ def create_app(
         async with runtime.scan_lock:
             runtime.snapshots.clear()
         return {"ok": True}
+
+    def _settings_payload(cfg: TriageConfig) -> dict[str, Any]:
+        raw_locale = ""
+        raw_accept = ""
+        if cfg.config_path.exists():
+            try:
+                parsed = tomllib.loads(cfg.config_path.read_text(encoding="utf-8"))
+                bsec = parsed.get("browser", {}) if isinstance(parsed, dict) else {}
+                raw_locale = str(bsec.get("locale", ""))
+                raw_accept = str(bsec.get("accept_language", ""))
+            except (OSError, tomllib.TOMLDecodeError):
+                pass
+        snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
+        known_accts = [a.name for a in snap.accounts] if snap else list(cfg.archive_map.keys())
+        return {
+            "config_path": str(cfg.config_path),
+            "user": {
+                "display_name": cfg.display_name,
+                "mark_read_on_archive": cfg.mark_read_on_archive,
+                "max_inbox_messages": cfg.max_inbox_messages,
+                "catchup_scan_limit": cfg.catchup_scan_limit,
+                "catchup_days_back": cfg.catchup_days_back,
+            },
+            "accounts": {
+                "gmail_archive_strategy": cfg.gmail_archive_strategy,
+                "archive_map": dict(cfg.archive_map),
+                "known_accounts": known_accts,
+                "valid_gmail_strategies": list(VALID_GMAIL_ARCHIVE_STRATEGIES),
+            },
+            "rules": {
+                "enabled_packs": list(cfg.enabled_packs),
+                "available_packs": [
+                    {"name": p.name, "description": p.description}
+                    for p in BUILTIN_PACKS.values()
+                ],
+            },
+            "browser": {
+                "locale": raw_locale,
+                "accept_language": raw_accept,
+                "effective_locale": cfg.browser_locale,
+                "effective_accept_language": cfg.accept_language,
+            },
+            "consulting": {
+                "enabled": cfg.consulting_enabled,
+                "networks": list(cfg.consulting_networks),
+                "match_keywords": list(cfg.consulting_match_keywords),
+                "negative_keywords": list(cfg.consulting_negative_keywords),
+                "decline_boilerplate": cfg.consulting_decline_boilerplate,
+            },
+            "profile": {
+                "wanted_domains": list(cfg.wanted_domains),
+                "bot_senders": list(cfg.bot_senders),
+                "transactional_domains": list(cfg.transactional_domains),
+                "bill_keywords": list(cfg.bill_keywords),
+            },
+        }
+
+    @app.get("/api/settings")
+    async def api_get_settings() -> dict[str, Any]:
+        return _settings_payload(runtime.config)
+
+    @app.put("/api/settings")
+    async def api_put_settings(req: SettingsUpdateRequest) -> dict[str, Any]:
+        updates = req.model_dump(exclude_none=True)
+        async with runtime.scan_lock:
+            try:
+                new_cfg = update_config_file(
+                    runtime.config.config_path,
+                    updates,
+                    archive_validator=validate_archive_destination,
+                )
+            except (ValueError, tomllib.TOMLDecodeError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            runtime.config = new_cfg
+            runtime.executor.config = new_cfg
+            runtime.bridge.archive_overrides = dict(new_cfg.archive_map)
+            runtime.bridge.gmail_archive_strategy = new_cfg.gmail_archive_strategy
+            runtime.snapshots.clear()
+        return {"ok": True, "settings": _settings_payload(new_cfg)}
+
+    @app.get("/api/sender-memory")
+    async def api_list_sender_memory(search: str = "", kind: str = "all") -> dict[str, Any]:
+        return {
+            "items": runtime.store.list_sender_memory(search=search, filter_kind=kind),
+        }
+
+    @app.post("/api/sender-memory/bulk")
+    async def api_bulk_sender_memory(req: SenderMemoryBulkRequest) -> dict[str, Any]:
+        if req.action not in ("always_keep", "archive", "mark_read", "clear", "delete"):
+            raise HTTPException(status_code=400, detail="Invalid sender memory action")
+        keys = [runtime.store.normalize_sender_key(k) for k in req.sender_keys if str(k).strip()]
+        if not keys:
+            raise HTTPException(status_code=400, detail="No sender_keys provided")
+        updated = 0
+        if req.action == "delete":
+            updated = runtime.store.delete_sender_memory(keys)
+        else:
+            for k in keys:
+                if req.action == "clear":
+                    runtime.store.record_sender_preference(
+                        sender_email=k,
+                        display_name=req.display_name,
+                        preferred_action=None,
+                        keep_subscribed=False,
+                    )
+                else:
+                    runtime.store.record_sender_preference(
+                        sender_email=k,
+                        display_name=req.display_name,
+                        preferred_action=req.action,
+                        keep_subscribed=True,
+                    )
+                updated += 1
+        async with runtime.scan_lock:
+            runtime.snapshots.clear()
+        return {
+            "ok": True,
+            "updated": updated,
+            "items": runtime.store.list_sender_memory(),
+        }
 
     def _resolve_pairs(snap: ScanSnapshot, items: list[ActionSelection]) -> list[tuple[ClassifiedItem, str]]:
         by_uid = {item.uid: item for item in snap.items}
