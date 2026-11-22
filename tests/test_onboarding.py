@@ -244,6 +244,17 @@ def test_locate_and_install_macos_app_bundle_with_fallback_and_cli(tmp_path: Pat
     src = _make_fake_app_bundle(tmp_path / "cellar")
     assert locate_macos_app_bundle(src) == src.resolve()
 
+    # Symlinked venv python inside custom Cellar libexec/bin/python should still find sibling Nollpost.app
+    target_py = tmp_path / "external-python" / "bin" / "python3.13"
+    target_py.parent.mkdir(parents=True, exist_ok=True)
+    target_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    venv_py = src.parent / "libexec" / "bin" / "python"
+    venv_py.parent.mkdir(parents=True, exist_ok=True)
+    venv_py.symlink_to(target_py)
+    monkeypatch.delenv("NOLLPOST_APP_BUNDLE", raising=False)
+    monkeypatch.setattr("nollpost.onboarding.sys.executable", str(venv_py))
+    assert locate_macos_app_bundle() == src.resolve()
+
     monkeypatch.setenv("NOLLPOST_APP_BUNDLE", str(src))
     assert locate_macos_app_bundle() == src.resolve()
 

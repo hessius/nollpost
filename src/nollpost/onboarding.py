@@ -235,9 +235,10 @@ def locate_macos_app_bundle(explicit_source: Optional[Path] = None) -> Optional[
     if env_bundle:
         candidates.append(Path(env_bundle).expanduser())
 
-    exe_resolved = Path(sys.executable).resolve()
-    for parent in exe_resolved.parents[:4]:
-        candidates.append(parent / "Nollpost.app")
+    exe_path = Path(sys.executable)
+    for base in (exe_path, exe_path.resolve()):
+        for parent in base.parents[:4]:
+            candidates.append(parent / "Nollpost.app")
 
     brew_prefix = os.environ.get("HOMEBREW_PREFIX", "").strip()
     if brew_prefix:

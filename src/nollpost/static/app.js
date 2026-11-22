@@ -691,7 +691,7 @@
     const resEl = qs("results-banner");
     resEl.classList.add("hidden");
     progEl.classList.remove("hidden");
-    progEl.innerHTML = `<span class="snabel-loader-inline-wrap">${snabelLoaderSvg(18, "snabel-loader-inline")}<span>${escapeHtml(t("run.starting", { total: pairs.length }))}</span></span>`;
+    progEl.innerHTML = `<span class="snabel-loader-inline-wrap">${snabelLoaderSvg(18, "snabel-loader-inline")}<span id="progress-status-text">${escapeHtml(t("run.starting", { total: pairs.length }))}</span></span>`;
 
     try {
       const { job_id } = await api("/api/execute/run", {
@@ -706,7 +706,10 @@
       while (true) {
         await new Promise((r) => setTimeout(r, 600));
         const job = await api(`/api/jobs/${encodeURIComponent(job_id)}`);
-        progEl.innerHTML = `<span class="snabel-loader-inline-wrap">${snabelLoaderSvg(18, "snabel-loader-inline")}<span>${escapeHtml(t("run.progress", { done: job.done, total: job.total, message: job.message }))}</span></span>`;
+        const statusEl = qs("progress-status-text");
+        const msg = t("run.progress", { done: job.done, total: job.total, message: job.message });
+        if (statusEl) statusEl.textContent = msg;
+        else progEl.textContent = msg;
         if (job.status === "completed") {
           progEl.classList.add("hidden");
           renderJobResults(job.results || [], job.scan_warning || "");
