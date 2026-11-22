@@ -77,7 +77,12 @@
     <div id="progress-banner" class="progress-banner hidden"></div>
     <div id="results-banner" class="results-banner hidden"></div>
 
-    <main id="queue-container" class="tbl-wrap"></main>
+    <main id="queue-container" class="tbl-wrap">
+      <div class="snabel-loader-card" role="status" aria-live="polite">
+        <img src="/static/loading.svg" class="snabel-loader-svg" alt="Nollpost" width="72" height="72" />
+        <div class="snabel-loader-title" id="scan-status-text" data-i18n="scan.starting">Starting Nollpost Review Board...</div>
+      </div>
+    </main>
   </div>
 
   <!-- Confirmation Modal -->

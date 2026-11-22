@@ -567,10 +567,14 @@
     renderTable();
   }
 
+  function snabelLoaderSvg(size = 72, cls = "snabel-loader-svg") {
+    return `<img src="/static/loading.svg" class="${escapeHtml(cls)}" alt="" width="${size}" height="${size}" aria-hidden="true" />`;
+  }
+
   async function loadState(refresh = false) {
     const seq = ++state.loadSeq;
     const modeLabel = state.mode === "catchup" ? t("mode.catchup") : t("mode.inbox");
-    qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--text-secondary);" id="scan-status-text">${escapeHtml(t("scan.loading", { mode: modeLabel }))}</div>`;
+    qs("queue-container").innerHTML = `<div class="snabel-loader-card" role="status" aria-live="polite">${snabelLoaderSvg(72, "snabel-loader-svg")}<div class="snabel-loader-title" id="scan-status-text">${escapeHtml(t("scan.loading", { mode: modeLabel }))}</div></div>`;
     let pollTimer = null;
     if (refresh || !state.data || state.data.mode !== state.mode) {
       pollTimer = setInterval(async () => {
@@ -687,7 +691,7 @@
     const resEl = qs("results-banner");
     resEl.classList.add("hidden");
     progEl.classList.remove("hidden");
-    progEl.textContent = t("run.starting", { total: pairs.length });
+    progEl.innerHTML = `<span class="snabel-loader-inline-wrap">${snabelLoaderSvg(18, "snabel-loader-inline")}<span>${escapeHtml(t("run.starting", { total: pairs.length }))}</span></span>`;
 
     try {
       const { job_id } = await api("/api/execute/run", {
@@ -702,7 +706,7 @@
       while (true) {
         await new Promise((r) => setTimeout(r, 600));
         const job = await api(`/api/jobs/${encodeURIComponent(job_id)}`);
-        progEl.textContent = t("run.progress", { done: job.done, total: job.total, message: job.message });
+        progEl.innerHTML = `<span class="snabel-loader-inline-wrap">${snabelLoaderSvg(18, "snabel-loader-inline")}<span>${escapeHtml(t("run.progress", { done: job.done, total: job.total, message: job.message }))}</span></span>`;
         if (job.status === "completed") {
           progEl.classList.add("hidden");
           renderJobResults(job.results || [], job.scan_warning || "");

@@ -60,11 +60,14 @@ def test_homebrew_formula_structure_and_updater(tmp_path: Path):
     assert '"install", "chromium"' in formula
     assert "post_install_steps do" in formula
     assert "Nollpost.app/Contents" in formula
+    assert "nollpost app" in formula
     assert "ServiceManagement" in formula
 
     menu_swift = (MACOS_DIR / "main.swift").read_text(encoding="utf-8")
     assert "SMAppService.mainApp" in menu_swift
     assert "Open at Login" in menu_swift
+    assert "startupIconTimer" in menu_swift
+    assert "strokeFractions" in menu_swift
 
     sample = tmp_path / "sample.tar.gz"
     sample.write_bytes(b"nollpost-release-tarball")

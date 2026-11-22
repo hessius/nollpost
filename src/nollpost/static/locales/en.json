@@ -92,6 +92,7 @@
   "empty.filtered_title": "No emails match the current filters",
   "empty.filtered_body": "Adjust your search query, account tab, category tab, or Unread filter to see queued items.",
   "empty.reset_filters": "Reset filters",
+  "scan.starting": "Starting Nollpost Review Board...",
   "scan.loading": "Scanning Mail.app ({mode})...",
   "tbl.col_acct": "Acct",
   "tbl.col_category": "Category",

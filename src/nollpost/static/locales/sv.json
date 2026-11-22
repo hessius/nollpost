@@ -92,6 +92,7 @@
   "empty.filtered_title": "Inga mejl matchar nuvarande filter",
   "empty.filtered_body": "Justera sökningen, kontofliken, kategorifliken eller filtret Endast olästa.",
   "empty.reset_filters": "Återställ filter",
+  "scan.starting": "Startar Nollpost Granskningspanel...",
   "scan.loading": "Skannar Mail.app ({mode})...",
   "tbl.col_acct": "Konto",
   "tbl.col_category": "Kategori",

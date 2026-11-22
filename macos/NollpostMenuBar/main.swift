@@ -74,6 +74,8 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var recentLogLines: [String] = []
     private var pendingBrowserOpen = false
     private var readyCheckTimer: Timer?
+    private var startupIconTimer: Timer?
+    private var startupAnimStart: Date?
     private var logHandle: FileHandle?
 
     static func main() {
@@ -95,11 +97,37 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopStartupIconAnimation()
         stopServerProcess(waitForExit: true)
         try? logHandle?.close()
     }
 
-    private nonisolated static func makeSnabelNollMenuIcon() -> NSImage {
+    private nonisolated static func easeInOut(_ x: CGFloat) -> CGFloat {
+        let clamped = max(0.0, min(1.0, x))
+        return 0.5 - 0.5 * cos(.pi * clamped)
+    }
+
+    private nonisolated static func windowProgress(_ u: CGFloat, start: CGFloat, end: CGFloat) -> CGFloat {
+        if u <= start { return 0.0 }
+        if u >= end { return 1.0 }
+        return easeInOut((u - start) / (end - start))
+    }
+
+    private nonisolated static func strokePath(_ path: NSBezierPath, length: CGFloat, fraction: CGFloat) {
+        if fraction <= 0.001 {
+            return
+        }
+        if fraction < 0.999 {
+            var pattern: [CGFloat] = [length * fraction, (length + 8.0) * 2.0]
+            path.setLineDash(&pattern, count: 2, phase: 0.0)
+        }
+        path.stroke()
+    }
+
+    private nonisolated static func makeSnabelNollMenuIcon(
+        strokeFractions: (zero: CGFloat, swirl: CGFloat, slash: CGFloat)? = nil
+    ) -> NSImage {
+        let fractions = strokeFractions ?? (zero: 1.0, swirl: 1.0, slash: 1.0)
         let img = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { rect in
             let scale: CGFloat = (rect.height - 2.0) / 400.0
             let tx = rect.midX - 256.0 * scale
@@ -109,32 +137,32 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             NSColor.black.setStroke()
 
-            let swirl = NSBezierPath()
-            swirl.move(to: NSPoint(x: 343.7, y: 410.3))
-            swirl.curve(to: NSPoint(x: 261.0, y: 438.0), controlPoint1: NSPoint(x: 318.9, y: 428.4), controlPoint2: NSPoint(x: 290.2, y: 438.0))
-            swirl.curve(to: NSPoint(x: 105.0, y: 256.0), controlPoint1: NSPoint(x: 173.6, y: 438.0), controlPoint2: NSPoint(x: 105.0, y: 357.9))
-            swirl.curve(to: NSPoint(x: 259.0, y: 74.0), controlPoint1: NSPoint(x: 105.0, y: 154.1), controlPoint2: NSPoint(x: 172.8, y: 74.0))
-            swirl.curve(to: NSPoint(x: 407.0, y: 244.0), controlPoint1: NSPoint(x: 341.9, y: 74.0), controlPoint2: NSPoint(x: 407.0, y: 148.8))
-            swirl.curve(to: NSPoint(x: 361.0, y: 352.0), controlPoint1: NSPoint(x: 407.0, y: 312.0), controlPoint2: NSPoint(x: 391.0, y: 352.0))
-            swirl.curve(to: NSPoint(x: 319.0, y: 256.0), controlPoint1: NSPoint(x: 331.0, y: 352.0), controlPoint2: NSPoint(x: 319.0, y: 322.0))
-            swirl.transform(using: xform)
-            swirl.lineWidth = 36.0 * scale
-            swirl.lineCapStyle = .butt
-            swirl.lineJoinStyle = .round
-            swirl.stroke()
-
             let innerZero = NSBezierPath()
-            innerZero.move(to: NSPoint(x: 255.0, y: 160.0))
-            innerZero.curve(to: NSPoint(x: 319.0, y: 256.0), controlPoint1: NSPoint(x: 292.1, y: 160.0), controlPoint2: NSPoint(x: 319.0, y: 197.4))
+            innerZero.move(to: NSPoint(x: 319.0, y: 256.0))
             innerZero.curve(to: NSPoint(x: 255.0, y: 352.0), controlPoint1: NSPoint(x: 319.0, y: 314.6), controlPoint2: NSPoint(x: 292.1, y: 352.0))
             innerZero.curve(to: NSPoint(x: 191.0, y: 256.0), controlPoint1: NSPoint(x: 217.9, y: 352.0), controlPoint2: NSPoint(x: 191.0, y: 314.6))
             innerZero.curve(to: NSPoint(x: 255.0, y: 160.0), controlPoint1: NSPoint(x: 191.0, y: 197.4), controlPoint2: NSPoint(x: 217.9, y: 160.0))
+            innerZero.curve(to: NSPoint(x: 319.0, y: 256.0), controlPoint1: NSPoint(x: 292.1, y: 160.0), controlPoint2: NSPoint(x: 319.0, y: 197.4))
             innerZero.close()
             innerZero.transform(using: xform)
             innerZero.lineWidth = 36.0 * scale
             innerZero.lineCapStyle = .butt
             innerZero.lineJoinStyle = .round
-            innerZero.stroke()
+            strokePath(innerZero, length: 514.0 * scale, fraction: fractions.zero)
+
+            let swirl = NSBezierPath()
+            swirl.move(to: NSPoint(x: 319.0, y: 256.0))
+            swirl.curve(to: NSPoint(x: 361.0, y: 352.0), controlPoint1: NSPoint(x: 319.0, y: 322.0), controlPoint2: NSPoint(x: 331.0, y: 352.0))
+            swirl.curve(to: NSPoint(x: 407.0, y: 244.0), controlPoint1: NSPoint(x: 391.0, y: 352.0), controlPoint2: NSPoint(x: 407.0, y: 312.0))
+            swirl.curve(to: NSPoint(x: 259.0, y: 74.0), controlPoint1: NSPoint(x: 407.0, y: 148.8), controlPoint2: NSPoint(x: 341.9, y: 74.0))
+            swirl.curve(to: NSPoint(x: 105.0, y: 256.0), controlPoint1: NSPoint(x: 172.8, y: 74.0), controlPoint2: NSPoint(x: 105.0, y: 154.1))
+            swirl.curve(to: NSPoint(x: 261.0, y: 438.0), controlPoint1: NSPoint(x: 105.0, y: 357.9), controlPoint2: NSPoint(x: 173.6, y: 438.0))
+            swirl.curve(to: NSPoint(x: 343.7, y: 410.3), controlPoint1: NSPoint(x: 290.2, y: 438.0), controlPoint2: NSPoint(x: 318.9, y: 428.4))
+            swirl.transform(using: xform)
+            swirl.lineWidth = 36.0 * scale
+            swirl.lineCapStyle = .butt
+            swirl.lineJoinStyle = .round
+            strokePath(swirl, length: 1116.0 * scale, fraction: fractions.swirl)
 
             let slash = NSBezierPath()
             slash.move(to: NSPoint(x: 298.1, y: 182.2))
@@ -142,7 +170,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             slash.transform(using: xform)
             slash.lineWidth = 26.0 * scale
             slash.lineCapStyle = .butt
-            slash.stroke()
+            strokePath(slash, length: 171.0 * scale, fraction: fractions.slash)
 
             return true
         }
@@ -342,6 +370,59 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             startStopMenuItem?.title = "Start Server"
             restartMenuItem?.isEnabled = false
             openBoardMenuItem?.title = "Start & Open Review Board"
+        }
+        updateStartupIconAnimation()
+    }
+
+    private func updateStartupIconAnimation() {
+        if serverState == .starting {
+            startStartupIconAnimation()
+        } else {
+            stopStartupIconAnimation()
+        }
+    }
+
+    private func startStartupIconAnimation() {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            return
+        }
+        if startupIconTimer != nil {
+            return
+        }
+        startupAnimStart = Date()
+        tickStartupIconAnimation()
+        startupIconTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.tickStartupIconAnimation()
+            }
+        }
+    }
+
+    private func tickStartupIconAnimation() {
+        guard serverState == .starting, let start = startupAnimStart, let button = statusItem?.button else {
+            stopStartupIconAnimation()
+            return
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        let cycle = elapsed / 4.86
+        let phase = cycle.truncatingRemainder(dividingBy: 2.0)
+        let u = CGFloat(phase <= 1.0 ? phase : (2.0 - phase))
+        let zero = Self.windowProgress(u, start: 0.04, end: 0.30)
+        let swirl = Self.windowProgress(u, start: 0.29, end: 0.72)
+        let slash = Self.windowProgress(u, start: 0.73, end: 0.86)
+        let icon = Self.makeSnabelNollMenuIcon(strokeFractions: (zero: zero, swirl: swirl, slash: slash))
+        icon.accessibilityDescription = "Nollpost"
+        button.image = icon
+    }
+
+    private func stopStartupIconAnimation() {
+        startupIconTimer?.invalidate()
+        startupIconTimer = nil
+        startupAnimStart = nil
+        if let button = statusItem?.button {
+            let icon = Self.makeSnabelNollMenuIcon()
+            icon.accessibilityDescription = "Nollpost"
+            button.image = icon
         }
     }
 

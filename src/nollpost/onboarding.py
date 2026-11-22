@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import platform
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -220,16 +222,161 @@ def _install_chromium() -> int:
     return int(proc.returncode)
 
 
+def _is_valid_app_bundle(path: Path) -> bool:
+    return (path / "Contents" / "MacOS" / "Nollpost").is_file()
+
+
+def locate_macos_app_bundle(explicit_source: Optional[Path] = None) -> Optional[Path]:
+    """Find the built Nollpost.app bundle from explicit path, Homebrew prefix, or checkout dist/."""
+    candidates: list[Path] = []
+    if explicit_source is not None:
+        candidates.append(explicit_source)
+    env_bundle = os.environ.get("NOLLPOST_APP_BUNDLE", "").strip()
+    if env_bundle:
+        candidates.append(Path(env_bundle).expanduser())
+
+    exe_resolved = Path(sys.executable).resolve()
+    for parent in exe_resolved.parents[:4]:
+        candidates.append(parent / "Nollpost.app")
+
+    brew_prefix = os.environ.get("HOMEBREW_PREFIX", "").strip()
+    if brew_prefix:
+        candidates.append(Path(brew_prefix) / "opt" / "nollpost" / "Nollpost.app")
+    candidates.append(Path("/opt/homebrew/opt/nollpost/Nollpost.app"))
+    candidates.append(Path("/usr/local/opt/nollpost/Nollpost.app"))
+
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates.append(repo_root / "dist" / "Nollpost.app")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _is_valid_app_bundle(resolved):
+            return resolved
+    return None
+
+
+def install_macos_app_bundle(
+    source_bundle: Optional[Path] = None,
+    *,
+    destinations: Optional[list[Path]] = None,
+    output_fn: Callable[[str], None] = print,
+) -> Optional[Path]:
+    """Copy Nollpost.app into /Applications (falling back to ~/Applications)."""
+    src = locate_macos_app_bundle(source_bundle)
+    if src is None:
+        return None
+    targets = (
+        list(destinations)
+        if destinations is not None
+        else [Path("/Applications/Nollpost.app"), Path.home() / "Applications" / "Nollpost.app"]
+    )
+    ditto_bin = Path("/usr/bin/ditto")
+    for dest in targets:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if not os.access(dest.parent, os.W_OK):
+            continue
+        if dest.exists() and not os.access(dest, os.W_OK):
+            continue
+        try:
+            if dest.resolve() == src.resolve():
+                return dest
+        except OSError:
+            pass
+        if ditto_bin.is_file():
+            proc = subprocess.run(
+                [str(ditto_bin), str(src), str(dest)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode == 0 and _is_valid_app_bundle(dest):
+                return dest
+            if proc.stderr.strip():
+                output_fn(f"[warn] Could not copy to {dest}: {proc.stderr.strip()}")
+        else:
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest, symlinks=True)
+            if _is_valid_app_bundle(dest):
+                return dest
+    return None
+
+
+def open_macos_app_bundle(app_path: Path) -> int:
+    """Launch Nollpost.app using macOS open."""
+    proc = subprocess.run(["/usr/bin/open", str(app_path)], check=False)
+    return int(proc.returncode)
+
+
+def run_app_command(
+    *,
+    install_only: bool = False,
+    no_open: bool = False,
+    source_bundle: Optional[Path] = None,
+    destinations: Optional[list[Path]] = None,
+    output_fn: Callable[[str], None] = print,
+    app_opener: Callable[[Path], int] = open_macos_app_bundle,
+) -> int:
+    """Install Nollpost.app into /Applications (or ~/Applications) and launch the menu-bar icon."""
+    if platform.system() != "Darwin" and source_bundle is None and destinations is None:
+        output_fn("`nollpost app` requires macOS.")
+        return 1
+
+    src = locate_macos_app_bundle(source_bundle)
+    if src is None:
+        output_fn(
+            "Could not find a built Nollpost.app bundle.\n"
+            "Install via Homebrew (`brew install hessius/tap/nollpost`) or build locally "
+            "(`python scripts/build_macos_app.py`), then re-run `nollpost app`."
+        )
+        return 1
+
+    installed = install_macos_app_bundle(
+        source_bundle=src,
+        destinations=destinations,
+        output_fn=output_fn,
+    )
+    if installed is None:
+        output_fn(
+            f"Could not install {src} to /Applications or ~/Applications.\n"
+            f'Try manually: ditto "{src}" /Applications/Nollpost.app'
+        )
+        return 1
+
+    output_fn(f"Installed Nollpost.app -> {installed}")
+    if install_only or no_open:
+        return 0
+
+    rc = app_opener(installed)
+    if rc != 0:
+        output_fn(f"Installed {installed}, but launching failed (exit {rc}). Try: open \"{installed}\"")
+        return rc
+    output_fn(f"Launched {installed} (look for the @0 icon in your macOS menu bar).")
+    return 0
+
+
 def run_setup(
     config: TriageConfig,
     bridge: AppleMailBridge,
     *,
     yes: bool = False,
     skip_browser: bool = False,
+    skip_app: bool = False,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
     chromium_checker: Callable[[], tuple[bool, str]] = _check_chromium_installed,
     browser_installer: Callable[[], int] = _install_chromium,
+    app_installer: Optional[Callable[[], Optional[Path]]] = None,
 ) -> int:
     """Interactive onboarding wizard writing validated config.toml."""
     output_fn("Nollpost Setup Wizard")
@@ -391,5 +538,16 @@ def run_setup(
     rendered = _render_config_toml(merged)
     config.config_path.write_text(rendered, encoding="utf-8")
     output_fn(f"\nSaved configuration to {config.config_path}")
-    output_fn("Next: run `nollpost doctor` and `nollpost serve`.")
+
+    installed_app: Optional[Path] = None
+    if not skip_app and (app_installer is not None or platform.system() == "Darwin"):
+        installer = app_installer if app_installer is not None else (lambda: install_macos_app_bundle(output_fn=output_fn))
+        installed_app = installer()
+        if installed_app is not None:
+            output_fn(f"Installed menu-bar app: {installed_app}")
+
+    if installed_app is not None:
+        output_fn("Next: run `nollpost app` to launch the menu-bar icon, then `nollpost doctor` and `nollpost serve`.")
+    else:
+        output_fn("Next: run `nollpost doctor` and `nollpost serve`.")
     return 0
