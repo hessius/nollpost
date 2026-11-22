@@ -6,31 +6,33 @@ Nollpost provides two macOS distribution paths beyond `uv tool` / `pipx`:
    - Creates an isolated Python 3.13 virtualenv in `libexec`.
    - Installs Playwright Chromium into `$(brew --prefix)/var/nollpost/ms-playwright` during `post_install` and wraps `bin/nollpost` with `PLAYWRIGHT_BROWSERS_PATH`.
    - Compiles the lightweight Swift/AppKit menu-bar launcher (`Nollpost.app`) against Cocoa & ApplicationServices and embeds `Info.plist` + AppleEvents entitlements.
-2. **Standalone Universal Menu-Bar App (`Nollpost.app`)** built via [`scripts/build_macos_app.py`](../scripts/build_macos_app.py):
-   - Compiles both `arm64` and `x86_64` slices and combines them with `lipo` into a single Universal binary.
+2. **Menu-Bar Wrapper App (`Nollpost.app`)** built via [`scripts/build_macos_app.py`](../scripts/build_macos_app.py):
+   - Compiles a thin Swift/AppKit Universal binary (`arm64` + `x86_64` via `lipo`). It does **not** bundle Python or Playwright Chromium by itself; it locates and runs an existing `nollpost` CLI installation (installed via Homebrew, `uv tool`, or `pipx`).
    - Starts `nollpost serve --no-open`, waits for loopback readiness, opens the authenticated Review Board in your browser, runs `nollpost doctor`, and surfaces macOS **Automation** (`AEDeterminePermissionToAutomateTarget`) and **Accessibility** (`AXIsProcessTrustedWithOptions`) prompts cleanly.
 
 ---
 
-## Setting Up the `Hessius/homebrew-tap` Repository
+## Updating `Hessius/homebrew-tap` on New Releases
 
-Before `brew install hessius/tap/nollpost` resolves as a short tap name:
+[`Hessius/homebrew-tap`](https://github.com/Hessius/homebrew-tap) hosts `Formula/nollpost.rb`:
 
-1. Create the public GitHub repository `Hessius/homebrew-tap` containing `Formula/nollpost.rb`.
-2. Tag a release in `Hessius/nollpost` (for example `v0.1.0`):
+```bash
+brew tap hessius/tap
+brew trust hessius/tap   # required once on Homebrew 7.0+
+brew install hessius/tap/nollpost
+```
+
+When releasing a new version:
+
+1. Tag a release in `Hessius/nollpost` (for example `v0.1.0`):
    ```bash
-   git tag v0.1.0
+   git tag -a v0.1.0 -m "v0.1.0"
    git push origin v0.1.0
    ```
-3. Run [`scripts/update_homebrew_formula.py`](../scripts/update_homebrew_formula.py) against the release tarball (or trigger the `.github/workflows/release-homebrew.yml` workflow) and copy the rendered `nollpost.rb` into `Hessius/homebrew-tap/Formula/nollpost.rb`:
+2. Run [`scripts/update_homebrew_formula.py`](../scripts/update_homebrew_formula.py) against the GitHub release tarball (or copy the `nollpost.rb` artifact produced by `.github/workflows/release-homebrew.yml`) into `Hessius/homebrew-tap/Formula/nollpost.rb`:
    ```bash
-   curl -L https://github.com/Hessius/nollpost/archive/refs/tags/v0.1.0.tar.gz -o /tmp/nollpost-v0.1.0.tar.gz
-   python3 scripts/update_homebrew_formula.py --version 0.1.0 --tarball /tmp/nollpost-v0.1.0.tar.gz
-   ```
-4. Until `Hessius/homebrew-tap` and `v0.1.0` are published, users can install directly from `HEAD` via Homebrew:
-   ```bash
-   brew tap hessius/nollpost https://github.com/Hessius/nollpost.git
-   brew install --HEAD hessius/nollpost/nollpost
+   SHA=$(curl -fsSL https://github.com/Hessius/nollpost/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256 | awk '{print $1}')
+   python3 scripts/update_homebrew_formula.py --version 0.1.0 --sha256 "$SHA"
    ```
 
 ---

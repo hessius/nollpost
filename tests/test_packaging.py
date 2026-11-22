@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -68,10 +69,13 @@ def test_homebrew_formula_structure_and_updater(tmp_path: Path):
     rendered = render_formula(version="v0.2.0", sha256=digest)
     assert 'url "https://github.com/Hessius/nollpost/archive/refs/tags/v0.2.0.tar.gz"' in rendered
     assert f'sha256 "{digest}"' in rendered
-    assert rendered == FORMULA_PATH.read_text(encoding="utf-8").replace(
-        'url "https://github.com/Hessius/nollpost/archive/refs/tags/v0.1.0.tar.gz"',
+    normalized = re.sub(
+        r'url "https://github\.com/Hessius/nollpost/archive/refs/tags/v[^"]+\.tar\.gz"',
         'url "https://github.com/Hessius/nollpost/archive/refs/tags/v0.2.0.tar.gz"',
-    ).replace("0" * 64, digest)
+        formula,
+    )
+    normalized = re.sub(r'sha256 "[0-9a-f]{64}"', f'sha256 "{digest}"', normalized)
+    assert rendered == normalized
 
     with pytest.raises(ValueError, match="SHA256"):
         render_formula(version="0.2.0", sha256="not-hex")

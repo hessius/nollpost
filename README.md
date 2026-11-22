@@ -32,12 +32,9 @@
 ### Homebrew (macOS Apple Silicon & Intel)
 
 ```bash
-# Once v0.1.0 + Hessius/homebrew-tap are published:
+brew tap hessius/tap
+brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
-
-# Or install directly from main (HEAD) today:
-brew tap hessius/nollpost https://github.com/Hessius/nollpost.git
-brew install --HEAD hessius/nollpost/nollpost
 
 # Optional: open the menu-bar launcher (starts Review Board & checks Mail permissions)
 open "$(brew --prefix nollpost)/Nollpost.app"
