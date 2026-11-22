@@ -485,3 +485,49 @@ def test_scan_progress_and_ui_safety_controls(tmp_path: Path, monkeypatch):
         assert "Outbound Email Warning" in app_js
         assert "System Settings" in app_js
         assert "/api/scan/status" in app_js
+        assert "\u2014" not in html
+        assert "\u2014" not in app_js
+
+
+def test_serve_startup_nonblocking_preload_and_terminal_guidance(tmp_path: Path, monkeypatch, capsys):
+    _setup_test_env(tmp_path, monkeypatch)
+
+    from nollpost import cli
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    bridge = FakeBridge()
+    app, token = create_app(cfg, store, bridge, token="preload-tok", preload=True)
+    with TestClient(app) as client:
+        st = client.get("/api/state", headers={"X-Triage-Key": token})
+        assert st.status_code == 200
+        assert len(st.json()["items"]) == 3
+
+    monkeypatch.setattr(cli, "AppleMailBridge", lambda **_kw: FakeBridge())
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *a, **kw: None)
+    rc = cli.main(["serve", "--port", "0"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "automatically" in out
+    assert "Review Board URL:" in out
+
+    # Unbound port + immediate shutdown cancels browser task cleanly without invoking Popen
+    import socket
+    from nollpost import web as web_mod
+
+    opened_cmds: list[list[str]] = []
+    monkeypatch.setattr(web_mod.subprocess, "Popen", lambda cmd, *a, **kw: opened_cmds.append(list(cmd)))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        closed_port = s.getsockname()[1]
+
+    app_cancel, _ = create_app(
+        cfg,
+        store,
+        bridge,
+        token="cancel-tok",
+        open_browser_url=f"http://127.0.0.1:{closed_port}/?key=cancel-tok",
+    )
+    with TestClient(app_cancel):
+        pass
+    assert opened_cmds == []

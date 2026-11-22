@@ -332,9 +332,9 @@ def run_setup(
             merged["accounts"]["gmail_archive_strategy"] = current_strategy
         if has_gmail and not yes:
             output_fn("\nGmail archive strategy:")
-            output_fn("  1) ui_menu     — Clicks Mail.app's Archive menu item (safe default; needs Accessibility)")
-            output_fn("  2) two_hop     — Stages via _ArchiveTmp and moves to All Mail")
-            output_fn("  3) tag_staging — Tags _ArchiveTmp for a Google Apps Script trigger (fastest headless)")
+            output_fn("  1) ui_menu     : Clicks Mail.app's Archive menu item (safe default; needs Accessibility)")
+            output_fn("  2) two_hop     : Stages via _ArchiveTmp and moves to All Mail")
+            output_fn("  3) tag_staging : Tags _ArchiveTmp for a Google Apps Script trigger (fastest headless)")
             choice = input_fn(f"Choose Gmail strategy (1-3 or name) [{current_strategy}]: ").strip().lower()
             mapping = {"1": "ui_menu", "2": "two_hop", "3": "tag_staging"}
             chosen_strategy = mapping.get(choice, choice or current_strategy)

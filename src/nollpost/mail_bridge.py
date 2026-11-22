@@ -198,7 +198,7 @@ def validate_archive_destination(mailbox_name: str) -> str:
     segments = [seg.strip().lower() for seg in cleaned.split("/") if seg.strip()]
     if cleaned.lower() in FORBIDDEN_DESTINATIONS or any(seg in FORBIDDEN_DESTINATIONS for seg in segments):
         raise ValueError(
-            f"Refusing forbidden destination mailbox '{mailbox_name}' — deletion/trash is strictly prohibited"
+            f"Refusing forbidden destination mailbox '{mailbox_name}': deletion/trash is strictly prohibited"
         )
     return cleaned
 

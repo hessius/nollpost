@@ -168,7 +168,7 @@
     const acctParts = Object.entries(d.briefing.per_account || {}).map(
       ([name, c]) => `${name} (${c.total})`
     );
-    const acctSuffix = acctParts.length ? ` — ${acctParts.join(" · ")}` : "";
+    const acctSuffix = acctParts.length ? ` · ${acctParts.join(" · ")}` : "";
     qs("board-title").textContent =
       state.mode === "catchup"
         ? `Nollpost Archive Catch-Up${acctSuffix}`
@@ -298,7 +298,7 @@
           <td><span class="acct ${accountToneClass(m.account)}">${escapeHtml(m.account)}</span></td>
           <td><span class="pill ${m.stage === "playwright" ? "danger" : "warn"}">${escapeHtml(m.stage)}</span></td>
           <td>
-            <strong>${escapeHtml(m.sender)}</strong> — ${escapeHtml(m.subject)}
+            <strong>${escapeHtml(m.sender)}</strong> · ${escapeHtml(m.subject)}
             <div class="sub-meta">
               <span>Msg ID #${escapeHtml(m.internal_id)}</span>
               <span>· ${escapeHtml(m.failure_reason)}</span>
@@ -560,17 +560,17 @@
     }
     if ((preview.declines || []).length) {
       detailsHtml += `<div class="preview-box"><strong>Consulting Declines (Playwright button):</strong><br/>${preview.declines
-        .map((d) => `• ${escapeHtml(d.sender)} — ${escapeHtml(d.subject)} → <code>${escapeHtml(d.url)}</code>`)
+        .map((d) => `• ${escapeHtml(d.sender)} · ${escapeHtml(d.subject)} → <code>${escapeHtml(d.url)}</code>`)
         .join("<br/>")}</div>`;
     }
     if ((preview.draft_declines || []).length) {
       detailsHtml += `<div class="preview-box"><strong>Boilerplate Drafts in Mail.app (kept in Inbox):</strong><br/>${preview.draft_declines
-        .map((d) => `• ${escapeHtml(d.sender)} — ${escapeHtml(d.subject)}`)
+        .map((d) => `• ${escapeHtml(d.sender)} · ${escapeHtml(d.subject)}`)
         .join("<br/>")}</div>`;
     }
     if ((preview.send_declines || []).length) {
       detailsHtml += `<div class="preview-box"><strong>Auto-Send Boilerplate Replies &amp; Archive:</strong><br/>${preview.send_declines
-        .map((d) => `• ${escapeHtml(d.sender)} — ${escapeHtml(d.subject)}`)
+        .map((d) => `• ${escapeHtml(d.sender)} · ${escapeHtml(d.subject)}`)
         .join("<br/>")}<pre style="margin-top:6px;">${escapeHtml(preview.boilerplate_preview)}</pre></div>`;
     }
 
@@ -649,7 +649,7 @@
           btns.push(`<button class="btn small" data-mark-unsub-idx="${idx}">${escapeHtml(lbl)}</button>`);
         }
         return `<div class="result-row">
-          <div><span class="pill ${cls}">${escapeHtml(r.status)}</span> <strong>${escapeHtml(r.sender)}</strong> — ${escapeHtml(r.detail)}</div>
+          <div><span class="pill ${cls}">${escapeHtml(r.status)}</span> <strong>${escapeHtml(r.sender)}</strong> · ${escapeHtml(r.detail)}</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">${btns.join("")}</div>
         </div>`;
       })
@@ -660,7 +660,7 @@
   function showProofModal(idx) {
     const r = state.lastJobResults[idx];
     if (!r) return;
-    qs("snap-title").textContent = `Execution Proof — ${r.sender}`;
+    qs("snap-title").textContent = `Execution Proof: ${r.sender}`;
     const shotName = r.screenshot_path ? r.screenshot_path.split("/").pop() : "";
     const shotHtml = shotName
       ? `<div class="preview-box"><strong>Confirmation Screenshot:</strong><br/><img src="/api/screenshots/${encodeURIComponent(shotName)}" style="max-width:100%;border-radius:6px;margin-top:6px;" /></div>`
@@ -711,7 +711,7 @@
         const dismissItemBtn = `<button type="button" class="btn small secondary" data-tray-dismiss-uid="${escapeHtml(i.uid)}">Dismiss</button>`;
         const urlLine = bestUrl ? `<div style="margin-top:2px;font-size:11px;color:var(--text-secondary);word-break:break-all;"><code>${escapeHtml(bestUrl)}</code></div>` : "";
         return `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <div>• [${escapeHtml(i.account)}] <strong>${escapeHtml(i.subject)}</strong> — ${escapeHtml(i.sender)}${changedTag}${urlLine}</div>
+          <div>• [${escapeHtml(i.account)}] <strong>${escapeHtml(i.subject)}</strong> · ${escapeHtml(i.sender)}${changedTag}${urlLine}</div>
           <div style="flex-shrink:0;display:flex;gap:6px;">${reopenBtn}${dismissItemBtn}</div>
         </div>`;
       })
@@ -732,7 +732,7 @@
   function showMissedSnapshot(id) {
     const entry = (state.data?.missed || []).find((m) => m.id === id);
     if (!entry) return;
-    qs("snap-title").textContent = `Missed Unsubscribe #${entry.id} — ${entry.sender}`;
+    qs("snap-title").textContent = `Missed Unsubscribe #${entry.id}: ${entry.sender}`;
     const links = (entry.candidate_links || [])
       .filter((l) => isSafeHttpUrl(l.href))
       .map((l) => `• ${escapeHtml(l.text || "(no text)")} → <a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.href)}</a>`)
@@ -812,7 +812,7 @@
         const checked = (r.enabled_packs || []).includes(pk.name) ? "checked" : "";
         return `<label class="toggle-check" title="${escapeHtml(pk.description)}">
           <input type="checkbox" class="cfg-pack-cb" value="${escapeHtml(pk.name)}" ${checked} />
-          <span>${escapeHtml(pk.name)} — ${escapeHtml(pk.description)}</span>
+          <span>${escapeHtml(pk.name)}: ${escapeHtml(pk.description)}</span>
         </label>`;
       })
       .join("");
@@ -1459,10 +1459,10 @@
             await navigator.clipboard.writeText(rep.markdown);
             if (statusEl) statusEl.textContent = "Copied redacted report to clipboard!";
           } else if (statusEl) {
-            statusEl.textContent = "Clipboard unavailable — copy from the redacted preview below.";
+            statusEl.textContent = "Clipboard unavailable. Copy from the redacted preview below.";
           }
         } catch (_clipErr) {
-          if (statusEl) statusEl.textContent = "Clipboard permission denied — copy from the redacted preview below.";
+          if (statusEl) statusEl.textContent = "Clipboard permission denied. Copy from the redacted preview below.";
         }
         return;
       }

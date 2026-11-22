@@ -29,12 +29,15 @@ def tracked_files(repo_root: Path) -> list[Path]:
 
 def scan_paths(paths: list[Path], repo_root: Path) -> list[str]:
     violations: list[str] = []
+    resolved_root = repo_root.resolve()
     for path in paths:
-        rel = path.relative_to(repo_root).as_posix()
+        rel = path.resolve().relative_to(resolved_root).as_posix()
         if path.name in FORBIDDEN_FILENAMES and not rel.startswith("src/nollpost/"):
             violations.append(f"{rel}: tracked sensitive config/env filename")
             continue
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+            if path.suffix.lower() == ".png" and Path(rel).parent.as_posix() == "docs/screenshots":
+                continue
             violations.append(f"{rel}: tracked binary/state file ({path.suffix})")
             continue
         try:

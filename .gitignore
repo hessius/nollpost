@@ -18,5 +18,5 @@ coverage.xml
 !.env.example
 .DS_Store
 .superpowers/
-screenshots/
+/screenshots/
 invoices/

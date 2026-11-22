@@ -166,7 +166,7 @@ def classify_email(
                 else ("read_open_link" if extracted.pertinent_url else "no_action")
             )
             subcat = "Consulting Match"
-            reason = f"Mentions '{pos_kw}' alongside '{neg_kw}' — review manually"
+            reason = f"Mentions '{pos_kw}' alongside '{neg_kw}'; review manually"
         else:
             mismatch_lbl = f"Mismatch: {neg_kw}" if neg_kw else "Mismatch: Outside Expertise"
             badges.append(mismatch_lbl)
@@ -447,7 +447,7 @@ def classify_email(
     if is_automated:
         badges.append("Unclassified Automated")
         subcat = "Unclassified Automated"
-        reason = "Automated sender without clear promo/unsub or invoice signals — kept safe as No action"
+        reason = "Automated sender without clear promo/unsub or invoice signals; kept safe as No action"
     else:
         badges.append("Human")
         subcat = "Direct Human"
