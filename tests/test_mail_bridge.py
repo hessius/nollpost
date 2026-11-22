@@ -50,6 +50,7 @@ def test_list_accounts_resolves_gmail_container_archive(monkeypatch):
     assert 'resolveMailbox(targetAccount, "[Gmail]/All e-post")' in mailbox_ref_applescript("[Gmail]/All e-post")
     assert is_gmail_all_mail_destination("[Gmail]/All e-post") is True
     assert is_gmail_all_mail_destination("[Gmail]/Arkiv") is True
+    assert is_gmail_all_mail_destination("[Google Mail]/All Mail") is True
     assert is_gmail_all_mail_destination("Archive") is False
 
 
@@ -97,8 +98,31 @@ def test_gmail_tag_archive_primary_with_ui_fallback(monkeypatch):
     assert any("front window" in s for s in scripts)
 
 
-def test_gmail_ui_archive_verifies_target_and_stops_on_surprise(monkeypatch):
+def test_gmail_background_archive_default_and_safety_guards(monkeypatch):
     bridge = AppleMailBridge()
+    assert bridge.gmail_archive_strategy == "background"
+    scripts: list[str] = []
+
+    def fake_bg_osascript(script: str, timeout: int = 120) -> str:
+        scripts.append(script)
+        assert '"[Gmail]"' in script and '"[Google Mail]"' in script
+        assert "papperskorgen" in script.lower()
+        assert "if msgRfc is not missing value and msgRfc is not \"\"" in script
+        assert "prevTrashIds" in script
+        assert "move newMsg to archMailbox" in script
+        assert "move newMsg to sourceMailbox" in script
+        assert "System Events" not in script and "activate" not in script
+        assert "delete " not in script.lower()
+        return "10,11"
+
+    monkeypatch.setattr("nollpost.mail_bridge.run_osascript", fake_bg_osascript)
+    moved = bridge.mark_read_and_archive("Google", "INBOX", "[Gmail]/All e-post", ["10", "11"])
+    assert moved == ["10", "11"]
+    assert len(scripts) == 1
+
+
+def test_gmail_ui_archive_verifies_target_and_stops_on_surprise(monkeypatch):
+    bridge = AppleMailBridge(gmail_archive_strategy="ui_menu")
     assert bridge.gmail_archive_strategy == "ui_menu"
     monkeypatch.setattr("nollpost.mail_bridge.time.sleep", lambda s: None)
     scripts: list[str] = []

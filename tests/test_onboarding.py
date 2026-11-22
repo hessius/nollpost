@@ -67,9 +67,23 @@ def test_doctor_passes_and_detects_missing_automation_and_chromium(tmp_path: Pat
     assert by_name["chromium"].status == "fail"
     assert by_name["mail_app"].status == "warn"
 
-    # Accessibility disabled with Gmail ui_menu -> warn (not fail)
-    ok_ax, checks_ax = run_doctor(
+    # Background Gmail strategy does not require Accessibility permission
+    ok_bg, checks_bg = run_doctor(
         cfg,
+        bridge_ok,
+        platform_name="Darwin",
+        chromium_checker=lambda: (True, "/tmp/chromium"),
+        accessibility_checker=lambda: (False, "disabled"),
+        mail_running_checker=lambda: True,
+    )
+    assert ok_bg is True
+    assert "accessibility" not in {c.name: c for c in checks_bg}
+
+    # Accessibility disabled with Gmail ui_menu -> warn (not fail)
+    from dataclasses import replace
+
+    ok_ax, checks_ax = run_doctor(
+        replace(cfg, gmail_archive_strategy="ui_menu"),
         bridge_ok,
         platform_name="Darwin",
         chromium_checker=lambda: (True, "/tmp/chromium"),

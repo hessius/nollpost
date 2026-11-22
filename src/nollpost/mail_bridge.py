@@ -82,7 +82,23 @@ SENT_CANDIDATES = [
 ]
 
 GMAIL_ARCHIVE_STAGING = "_ArchiveTmp"
-# Default Gmail archive path: Mail.app native Archive menu click (safe out of the box without Apps Script).
+GMAIL_TRASH_LEAF_NAMES = (
+    "trash",
+    "bin",
+    "papperskorgen",
+    "papierkorb",
+    "corbeille",
+    "papelera",
+    "cestino",
+    "prullenbak",
+    "lixeira",
+    "kosz",
+    "papirkurv",
+    "roskakori",
+    "kuka",
+    "skraldespand",
+)
+# Default Gmail archive path: silent background two-hop via Gmail Trash -> All Mail (strips \Inbox cleanly).
 GMAIL_TAG_ARCHIVE_ENABLED = False
 GMAIL_TWO_HOP_ENABLED = False
 GMAIL_UI_ARCHIVE_ENABLED = True
@@ -91,7 +107,11 @@ GMAIL_UI_ARCHIVE_ENABLED = True
 def is_gmail_all_mail_destination(mailbox_name: str) -> bool:
     """Return True for Gmail All Mail special-use targets requiring two-hop \\Inbox removal."""
     low = mailbox_name.strip().lower()
-    return low.startswith("[gmail]/all") or low in ("all e-post", "all mail", "alla brev", "[gmail]/arkiv")
+    return (
+        low.startswith("[gmail]/all")
+        or low.startswith("[google mail]/all")
+        or low in ("all e-post", "all mail", "alla brev", "[gmail]/arkiv", "[google mail]/arkiv")
+    )
 
 _AS_HELPERS = """
 on encodeField(val)
@@ -269,7 +289,7 @@ class AppleMailBridge:
     def __init__(
         self,
         archive_overrides: Optional[dict[str, str]] = None,
-        gmail_archive_strategy: str = "ui_menu",
+        gmail_archive_strategy: str = "background",
     ):
         self.archive_overrides = dict(archive_overrides or {})
         self.gmail_archive_strategy = gmail_archive_strategy
@@ -982,6 +1002,122 @@ end extractMessageLine
                 break
         return moved
 
+    def _archive_gmail_background(
+        self,
+        account: str,
+        from_mailbox: str,
+        dest_mailbox: str,
+        clean_ids: list[str],
+        mark_read: bool = True,
+    ) -> list[str]:
+        """Archive Gmail messages silently in the background with zero windows or focus stealing.
+
+        Moving directly to ``[Gmail]/All Mail`` over IMAP retains ``\\Inbox``; routing each
+        message atomically through Gmail's ``[Gmail]/<Trash>`` folder causes Gmail's server
+        to strip ``\\Inbox``, after which moving it immediately by RFC ``Message-ID`` to
+        ``[Gmail]/All Mail`` clears ``\\Trash`` while preserving the archived copy.
+        Requires a non-empty RFC ``Message-ID`` per message and rolls back to ``from_mailbox``
+        if moving out of Trash fails so no message is ever abandoned in Trash.
+        """
+        dest = validate_archive_destination(dest_mailbox)
+        safe_acct = escape_applescript(account)
+        src_ref = mailbox_ref_applescript(from_mailbox, account_var="targetAccount", out_var="sourceMailbox")
+        dest_ref = mailbox_ref_applescript(dest, account_var="targetAccount", out_var="archMailbox")
+        id_list = ", ".join(clean_ids)
+        trash_cands = "{" + ", ".join(f'"{escape_applescript(name)}"' for name in GMAIL_TRASH_LEAF_NAMES) + "}"
+        read_target = "set read status of targetMsg to true" if mark_read else ""
+        read_moved = "try\nset read status of newMsg to true\nend try" if mark_read else ""
+
+        script = _AS_HELPERS + f"""
+        tell application "Mail"
+            with timeout of 110 seconds
+                set targetAccount to account "{safe_acct}"
+                {src_ref}
+                {dest_ref}
+                set gmailContainer to missing value
+                repeat with rootName in {{"[Gmail]", "[Google Mail]"}}
+                    try
+                        set gmailContainer to mailbox (rootName as string) of targetAccount
+                        exit repeat
+                    end try
+                end repeat
+                if gmailContainer is missing value then return ""
+
+                set trashNames to {trash_cands}
+                set trashBox to missing value
+                repeat with mb in every mailbox of gmailContainer
+                    if (name of mb) is in trashNames then
+                        set trashBox to mb
+                        exit repeat
+                    end if
+                end repeat
+                if trashBox is missing value then return ""
+
+                set movedIds to {{}}
+                repeat with msgId in {{{id_list}}}
+                    try
+                        set targetMsg to «class mssg» id (msgId as integer) of sourceMailbox
+                        set msgRfc to ""
+                        try
+                            set msgRfc to message id of targetMsg
+                        end try
+                        if msgRfc is not missing value and msgRfc is not "" then
+                            set prevTrashIds to {{}}
+                            try
+                                set existingHits to (every message of trashBox whose message id is msgRfc)
+                                repeat with em in existingHits
+                                    set end of prevTrashIds to (id of em)
+                                end repeat
+                            end try
+                            {read_target}
+                            move targetMsg to trashBox
+
+                            set newMsg to missing value
+                            repeat 15 times
+                                try
+                                    set hits to (every message of trashBox whose message id is msgRfc)
+                                    repeat with candMsg in hits
+                                        if (id of candMsg) is not in prevTrashIds then
+                                            set newMsg to candMsg
+                                            exit repeat
+                                        end if
+                                    end repeat
+                                    if newMsg is not missing value then exit repeat
+                                end try
+                                delay 0.2
+                            end repeat
+
+                            if newMsg is not missing value then
+                                try
+                                    {read_moved}
+                                    move newMsg to archMailbox
+                                    set end of movedIds to (msgId as string)
+                                on error
+                                    try
+                                        move newMsg to sourceMailbox
+                                    end try
+                                end try
+                            end if
+                        end if
+                    end try
+                end repeat
+
+                try
+                    with timeout of 12 seconds
+                        synchronize with targetAccount
+                    end timeout
+                end try
+
+                set AppleScript's text item delimiters to ","
+                set joined to movedIds as string
+                set AppleScript's text item delimiters to ""
+                return joined
+            end timeout
+        end tell
+        """
+        raw = run_osascript(script, timeout=120)
+        return [x.strip() for x in raw.split(",") if x.strip()]
+
     def mark_read_and_archive(
         self,
         account: str,
@@ -996,6 +1132,14 @@ end extractMessageLine
             return []
         is_gmail_arch = from_mailbox.strip().lower() != dest.lower() and is_gmail_all_mail_destination(dest)
         if is_gmail_arch:
+            if self.gmail_archive_strategy == "background":
+                return self._archive_gmail_background(
+                    account=account,
+                    from_mailbox=from_mailbox,
+                    dest_mailbox=dest,
+                    clean_ids=clean_ids,
+                    mark_read=mark_read,
+                )
             moved: list[str] = []
             remaining = list(clean_ids)
             use_tag = self.gmail_archive_strategy == "tag_staging" or GMAIL_TAG_ARCHIVE_ENABLED

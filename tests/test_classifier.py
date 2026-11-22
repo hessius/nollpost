@@ -116,7 +116,7 @@ def test_bill_invoice_and_kivra_and_creators(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
     cfg = load_config(ensure_files=False)
-    assert cfg.gmail_archive_strategy == "ui_menu"
+    assert cfg.gmail_archive_strategy == "background"
 
     inv = classify_email(
         _hdr("Faktura 5819", "Acme Billing <faktura-no-reply@billing.example.se>", "faktura-no-reply@billing.example.se", "billing.example.se"),
@@ -305,7 +305,7 @@ def test_default_config_is_neutral_and_validates_gmail_strategy(tmp_path: Path, 
     monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
     cfg = load_config(ensure_files=True)
     assert cfg.display_name == ""
-    assert cfg.gmail_archive_strategy == "ui_menu"
+    assert cfg.gmail_archive_strategy == "background"
     assert cfg.consulting_enabled is False
     assert cfg.enabled_packs == []
     assert cfg.wanted_domains == []
