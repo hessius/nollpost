@@ -368,8 +368,10 @@ def _extract_pertinent_url(
         for tok in re.findall(r"[a-z0-9åäö]{4,}", subject.lower())
         if tok not in SUBJECT_STOPWORDS
     ]
-    sender_root = _registrable_root(sender_domain.lower())
+    sender_domain_low = sender_domain.lower().strip()
+    sender_root = _registrable_root(sender_domain_low)
     wanted_lower = tuple(d.lower().strip() for d in wanted_domains if d.strip())
+    wanted_roots = tuple(_registrable_root(d) for d in wanted_lower)
 
     best_score = -1.0
     best_url: Optional[str] = None
@@ -397,7 +399,7 @@ def _extract_pertinent_url(
         same_brand_host = bool(sender_root and dest_root == sender_root)
 
         for pack in packs:
-            if pack.gov_domain_token and pack.gov_domain_token in sender_domain:
+            if pack.gov_domain_token and pack.gov_domain_token in sender_domain_low:
                 if pack.gov_app_host and pack.gov_app_host in decoded_full:
                     score += 8.0
                 elif pack.gov_domain_token in dest_host:
@@ -419,8 +421,8 @@ def _extract_pertinent_url(
                 score += 2.0
 
         if same_brand_host or any(
-            dest_host == d or dest_host.endswith("." + d) or dest_root == _registrable_root(d)
-            for d in wanted_lower
+            dest_host == d or dest_host.endswith("." + d) or dest_root == wr
+            for d, wr in zip(wanted_lower, wanted_roots)
         ):
             score += 4.0
 

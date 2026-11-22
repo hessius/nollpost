@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable
 
 
@@ -81,8 +82,8 @@ BUILTIN_PACKS: dict[str, RulePack] = {
 }
 
 
-def resolve_packs(pack_names: Iterable[str]) -> list[RulePack]:
-    """Validate and resolve enabled rule pack names in order without duplicates."""
+@lru_cache(maxsize=32)
+def _resolve_packs_cached(pack_names: tuple[str, ...]) -> tuple[RulePack, ...]:
     resolved: list[RulePack] = []
     seen: set[str] = set()
     for raw in pack_names:
@@ -95,4 +96,11 @@ def resolve_packs(pack_names: Iterable[str]) -> list[RulePack]:
             raise ValueError(f"Unknown rule pack {raw!r}; available packs: {available}")
         seen.add(name)
         resolved.append(pack)
-    return resolved
+    return tuple(resolved)
+
+
+def resolve_packs(pack_names: Iterable[str]) -> tuple[RulePack, ...]:
+    """Validate and resolve enabled rule pack names in order without duplicates."""
+    if isinstance(pack_names, (str, bytes)):
+        raise ValueError("enabled_packs must be a list of pack names (e.g. [\"se\"]), not a string")
+    return _resolve_packs_cached(tuple(str(p) for p in pack_names))

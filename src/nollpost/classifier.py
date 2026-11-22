@@ -105,6 +105,8 @@ def classify_email(
 ) -> ClassifiedItem:
     """Classify one email into category, default action, allowed actions, and badges."""
     uid = f"{header.account}:{header.mailbox}:{header.internal_id}"
+    sender_domain_low = header.sender_domain.lower()
+    sender_email_low = header.sender_email.lower()
     combined = f"{header.subject}\n{header.sender}\n{extracted.plain_excerpt}".lower()
     badges: list[str] = []
     learned_pref: Optional[str] = None
@@ -208,7 +210,7 @@ def classify_email(
         or any(p.security_text_re and p.security_text_re.search(combined) for p in packs)
     )
     is_explicit_bill_sender = any(
-        k in header.sender_domain or k in header.sender_email for k in explicit_bill_senders
+        k in sender_domain_low or k in sender_email_low for k in explicit_bill_senders
     )
     has_critical_bill = bool(
         CRITICAL_BILL_TERMS_RE.search(combined)
@@ -227,7 +229,7 @@ def classify_email(
                 p
                 for p in packs
                 if p.gov_domain_token
-                and (p.gov_domain_token in combined or p.gov_domain_token in header.sender_domain)
+                and (p.gov_domain_token in combined or p.gov_domain_token in sender_domain_low)
             ),
             None,
         )

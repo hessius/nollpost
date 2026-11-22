@@ -345,6 +345,18 @@ def test_default_config_is_neutral_and_validates_gmail_strategy(tmp_path: Path, 
     with pytest.raises(ValueError, match="Unknown rule pack"):
         load_config(ensure_files=False)
 
+    cfg_path.write_text('[rules]\nenabled_packs = "se"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a list"):
+        load_config(ensure_files=False)
+
+    mixed_case_kivra = classify_email(
+        _hdr("Nytt brev", "Kivra <No-Reply@Kivra.COM>", "No-Reply@Kivra.COM", "Kivra.COM"),
+        ExtractedEmailInfo(),
+        se_cfg,
+        "Archive",
+    )
+    assert mixed_case_kivra.subcategory == "Gov / Kivra"
+
     cfg_path.write_text('[accounts]\ngmail_archive_strategy = "invalid_mode"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="gmail_archive_strategy"):
         load_config(ensure_files=False)

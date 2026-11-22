@@ -95,7 +95,7 @@ def test_kivra_pertinent_link_ranked_above_footer():
     </body></html>
     """
     raw = _build_html_email("Du har ett nytt meddelande i Kivra", "Kivra <noreply@notifications.kivra.com>", html)
-    info = extract_email_info(raw, "notifications.kivra.com", enabled_packs=["se"])
+    info = extract_email_info(raw, "Notifications.Kivra.COM", enabled_packs=["se"])
     assert info.pertinent_url == "https://app.kivra.com/inbox/msg/99"
 
 

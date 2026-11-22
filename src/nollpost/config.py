@@ -194,7 +194,10 @@ def load_config(ensure_files: bool = True) -> TriageConfig:
             f"expected one of {', '.join(VALID_GMAIL_ARCHIVE_STRATEGIES)}"
         )
 
-    enabled_packs = [p.name for p in resolve_packs(rules_sec.get("enabled_packs", []))]
+    raw_packs = rules_sec.get("enabled_packs", [])
+    if not isinstance(raw_packs, list):
+        raise ValueError("rules.enabled_packs must be a list of pack names (e.g. [\"se\"])")
+    enabled_packs = [p.name for p in resolve_packs(raw_packs)]
 
     # Support both [consulting] (v1.0) and legacy [profile].consulting_* / [user].consulting_decline_boilerplate
     user_consult = user_data.get("consulting", {})
