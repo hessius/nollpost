@@ -941,6 +941,64 @@ end extractMessageLine
         raw = run_osascript(script, timeout=120)
         return [x.strip() for x in raw.split(",") if x.strip()]
 
+    def restore_to_inbox(
+        self,
+        account: str,
+        from_mailbox: str,
+        internal_id: str,
+        *,
+        inbox_mailbox: str = "INBOX",
+        rfc_message_id: str = "",
+    ) -> bool:
+        """Restore a previously archived message back into the account's INBOX (Archive-only safety preserved)."""
+        dest_inbox = validate_archive_destination(inbox_mailbox)
+        src_box = validate_archive_destination(from_mailbox)
+        cleaned_id = str(internal_id).strip()
+        if cleaned_id and not re.fullmatch(r"\d+", cleaned_id):
+            raise ValueError(f"internal_id must be digits only, got {internal_id!r}")
+        if not cleaned_id and not rfc_message_id.strip():
+            raise ValueError("Either internal_id or rfc_message_id is required to restore a message")
+
+        safe_acct = escape_applescript(account)
+        src_ref = mailbox_ref_applescript(src_box, account_var="targetAccount", out_var="sourceMailbox")
+        dest_ref = mailbox_ref_applescript(dest_inbox, account_var="targetAccount", out_var="destMailbox")
+        id_val = int(cleaned_id) if cleaned_id else 0
+        safe_rfc = escape_applescript(rfc_message_id.strip())
+        script = _AS_HELPERS + f"""
+        tell application "Mail"
+            with timeout of 60 seconds
+                set targetAccount to account "{safe_acct}"
+                {src_ref}
+                {dest_ref}
+                set targetMsg to missing value
+                if {id_val} > 0 then
+                    try
+                        set targetMsg to «class mssg» id {id_val} of sourceMailbox
+                    end try
+                end if
+                if targetMsg is missing value and "{safe_rfc}" is not "" then
+                    try
+                        set matched to (every message of sourceMailbox whose message id is "{safe_rfc}")
+                        if (count of matched) > 0 then set targetMsg to item 1 of matched
+                    end try
+                end if
+                if targetMsg is not missing value then
+                    move targetMsg to destMailbox
+                    return "moved"
+                end if
+                if {id_val} > 0 then
+                    try
+                        set alreadyMsg to «class mssg» id {id_val} of destMailbox
+                        if alreadyMsg is not missing value then return "already_in_inbox"
+                    end try
+                end if
+                return "not_found"
+            end timeout
+        end tell
+        """
+        out = run_osascript(script, timeout=70).strip()
+        return out in ("moved", "already_in_inbox")
+
     def create_or_send_reply(
         self,
         account: str,

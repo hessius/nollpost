@@ -636,7 +636,17 @@ class BatchExecutor:
                 synced_accounts.add(acct)
                 await asyncio.to_thread(self.bridge.synchronize_account, acct, 8)
 
+        items_by_uid = {it.uid: it for it, _ in items_with_actions}
         for res in results:
+            src_item = items_by_uid.get(res.uid)
+            archived_dest = ""
+            if res.status == "ok" and res.action in (
+                "archive",
+                "archive_and_unsub",
+                "decline_and_archive",
+                "send_decline_and_archive",
+            ):
+                archived_dest = src_item.archive_mailbox if src_item else ""
             self.store.log_action(
                 run_id=run_id,
                 account=res.account,
@@ -646,6 +656,8 @@ class BatchExecutor:
                 action=res.action,
                 status=res.status,
                 detail=res.detail,
+                archive_mailbox=archived_dest,
+                rfc_message_id=src_item.header.rfc_message_id if src_item else "",
             )
 
         return results
@@ -653,7 +665,7 @@ class BatchExecutor:
     def sweep_opened_tray(self, message_uids: list[str], archive_map: dict[str, str]) -> dict[str, Any]:
         """Move approved Step 2 Safety Tray items from INBOX to their account Archive."""
         active = {row["message_uid"]: row for row in self.store.list_active_tray()}
-        by_target: dict[tuple[str, str, str], list[tuple[str, str]]] = defaultdict(list)
+        by_target: dict[tuple[str, str, str], list[tuple[str, dict[str, Any]]]] = defaultdict(list)
 
         for uid in message_uids:
             row = active.get(uid)
@@ -661,14 +673,15 @@ class BatchExecutor:
                 continue
             acct = row["account"]
             arch_box = archive_map.get(acct, "Archive")
-            by_target[(acct, row["mailbox"], arch_box)].append((uid, row["internal_id"]))
+            by_target[(acct, row["mailbox"], arch_box)].append((uid, row))
 
         swept_uids: list[str] = []
+        sweep_run_id = f"sweep-{uuid.uuid4().hex[:8]}"
         try:
             for (acct, src_box, arch_box), pairs in by_target.items():
                 for start in range(0, len(pairs), ARCHIVE_CHUNK_SIZE):
                     chunk_pairs = pairs[start : start + ARCHIVE_CHUNK_SIZE]
-                    ids = [iid for _, iid in chunk_pairs]
+                    ids = [r["internal_id"] for _, r in chunk_pairs]
                     moved = set(
                         self.bridge.mark_read_and_archive(
                             acct,
@@ -679,10 +692,22 @@ class BatchExecutor:
                         )
                     )
                     chunk_swept: list[str] = []
-                    for uid, iid in chunk_pairs:
-                        if iid in moved:
+                    for uid, row in chunk_pairs:
+                        if row["internal_id"] in moved:
                             chunk_swept.append(uid)
                             swept_uids.append(uid)
+                            self.store.log_action(
+                                run_id=sweep_run_id,
+                                account=acct,
+                                internal_id=str(row["internal_id"]),
+                                sender=str(row.get("sender", "")),
+                                subject=str(row.get("subject", "")),
+                                action="sweep_archive",
+                                status="ok",
+                                detail=f"Swept from Safety Tray to {acct}/{arch_box}",
+                                archive_mailbox=arch_box,
+                                rfc_message_id=str(row.get("rfc_message_id", "")),
+                            )
                     if chunk_swept:
                         self.store.mark_tray_swept(chunk_swept)
                         self.store.increment_stat("total_archived", len(chunk_swept))
