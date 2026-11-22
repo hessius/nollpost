@@ -370,3 +370,44 @@ def test_chunked_archive_progress_partial_timeout_and_tray_reopen_enrichment(tmp
         mem = store.get_sender_memory("info@shop.example")
         assert mem is not None and mem.unsub_count >= 1
         assert mdata["stats"]["total_archived"] == 17
+
+
+def test_ui_and_api_support_arbitrary_accounts_and_consulting_visibility(tmp_path: Path, monkeypatch):
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class ThreeAccountBridge(FakeBridge):
+        def list_accounts(self) -> list[AccountInfo]:
+            return [
+                AccountInfo("Fastmail", ["a@example.com"], "INBOX", "Archive", "Sent"),
+                AccountInfo("Work", ["b@example.com"], "INBOX", "Archive", "Sent Items"),
+                AccountInfo("Personal", ["c@example.com"], "INBOX", "All Mail", "Sent"),
+            ]
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            return [
+                MailHeader(account, "INBOX", f"{account}-1", f"m-{account}", f"Hello {account}", "Sender <news@shop.example>", "news@shop.example", "shop.example", "2026-11-20T09:00:00", False, False, 0)
+            ]
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, ThreeAccountBridge(), token="multi-tok")
+    with TestClient(app) as client:
+        st = client.get("/api/state", headers={"X-Triage-Key": token}).json()
+        assert st["consulting_enabled"] is False
+        assert sorted(a["name"] for a in st["accounts"]) == ["Fastmail", "Personal", "Work"]
+        assert sorted(st["briefing"]["per_account"].keys()) == ["Fastmail", "Personal", "Work"]
+
+        app_js = client.get("/static/app.js").text
+        style_css = client.get("/static/style.css").text
+        assert "Both (" not in app_js
+        assert "All Accounts (" in app_js
+        assert "accountToneClass" in app_js
+        assert ".acct-c0" in style_css and ".acct-c5" in style_css
+        assert ".acct.icloud" not in style_css
+
+    (tmp_path / "config.toml").write_text("[consulting]\nenabled = true\n", encoding="utf-8")
+    cfg_consult = load_config(ensure_files=False)
+    app2, token2 = create_app(cfg_consult, store, ThreeAccountBridge(), token="multi-tok-2")
+    with TestClient(app2) as client2:
+        st2 = client2.get("/api/state", headers={"X-Triage-Key": token2}).json()
+        assert st2["consulting_enabled"] is True

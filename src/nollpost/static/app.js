@@ -45,6 +45,15 @@
       .replace(/'/g, "&#39;");
   }
 
+  function accountToneClass(name) {
+    const s = String(name || "").toLowerCase();
+    let hash = 5381;
+    for (let i = 0; i < s.length; i++) {
+      hash = ((hash << 5) + hash + s.charCodeAt(i)) >>> 0;
+    }
+    return `acct-c${hash % 6}`;
+  }
+
   function isSafeHttpUrl(url) {
     return /^https?:\/\//i.test(String(url || "").trim());
   }
@@ -115,10 +124,11 @@
     const acctParts = Object.entries(d.briefing.per_account || {}).map(
       ([name, c]) => `${name} (${c.total})`
     );
+    const acctSuffix = acctParts.length ? ` — ${acctParts.join(" · ")}` : "";
     qs("board-title").textContent =
       state.mode === "catchup"
-        ? `Nollpost Archive Catch-Up — ${acctParts.join(" + ")}`
-        : `Nollpost — ${acctParts.join(" + ")}`;
+        ? `Nollpost Archive Catch-Up${acctSuffix}`
+        : `Nollpost${acctSuffix}`;
 
     const st = d.stats || {};
     qs("tally-pills").innerHTML = `
@@ -182,22 +192,36 @@
       newsletters: allItems.filter((i) => i.category === "newsletters").length,
       missed: (d.missed || []).length,
     };
-    qs("category-tabs").innerHTML = CATEGORIES.map(
+    const visibleCats = CATEGORIES.filter(
+      (c) => c.id !== "consulting" || d.consulting_enabled || catCounts.consulting > 0
+    );
+    if (!visibleCats.some((c) => c.id === state.category)) {
+      state.category = "all";
+    }
+    qs("category-tabs").innerHTML = visibleCats.map(
       (c) =>
         `<button class="tab ${state.category === c.id ? "active" : ""}" data-cat="${c.id}">${escapeHtml(c.label)} (${catCounts[c.id] || 0})</button>`
     ).join("");
 
-    const accts = [{ id: "all", label: `Both (${allItems.length})` }];
-    for (const a of d.accounts || []) {
-      const cnt = allItems.filter((i) => i.header.account === a.name).length;
-      accts.push({ id: a.name, label: `${a.name} (${cnt})` });
+    const acctList = d.accounts || [];
+    if (state.account !== "all" && !acctList.some((a) => a.name === state.account)) {
+      state.account = "all";
     }
-    qs("account-tabs").innerHTML = accts
-      .map(
-        (a) =>
-          `<button class="tab ${state.account === a.id ? "active" : ""}" data-acct="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`
-      )
-      .join("");
+    if (acctList.length <= 1) {
+      qs("account-tabs").innerHTML = "";
+    } else {
+      const accts = [{ id: "all", label: `All Accounts (${allItems.length})` }];
+      for (const a of acctList) {
+        const cnt = allItems.filter((i) => i.header.account === a.name).length;
+        accts.push({ id: a.name, label: `${a.name} (${cnt})` });
+      }
+      qs("account-tabs").innerHTML = accts
+        .map(
+          (a) =>
+            `<button class="tab ${state.account === a.id ? "active" : ""}" data-acct="${escapeHtml(a.id)}">${escapeHtml(a.label)}</button>`
+        )
+        .join("");
+    }
   }
 
   function pickBestMissedLink(m) {
@@ -226,7 +250,7 @@
         const firstLink = pickBestMissedLink(m);
         return `
         <tr>
-          <td><span class="acct ${m.account.toLowerCase() === "google" ? "google" : "icloud"}">${escapeHtml(m.account)}</span></td>
+          <td><span class="acct ${accountToneClass(m.account)}">${escapeHtml(m.account)}</span></td>
           <td><span class="pill ${m.stage === "playwright" ? "danger" : "warn"}">${escapeHtml(m.stage)}</span></td>
           <td>
             <strong>${escapeHtml(m.sender)}</strong> — ${escapeHtml(m.subject)}
@@ -274,7 +298,7 @@
         const h = item.header;
         const checked = state.selectedUids.has(item.uid);
         const curAction = state.actionsByUid.get(item.uid) || item.default_action;
-        const acctCls = h.account.toLowerCase() === "google" ? "google" : "icloud";
+        const acctCls = accountToneClass(h.account);
         const catPillCls =
           item.category === "attention"
             ? "warn"
@@ -367,8 +391,8 @@
   }
 
   function render() {
-    renderHeader();
     renderTabs();
+    renderHeader();
     renderTable();
   }
 
