@@ -1,6 +1,6 @@
 # <img src="src/nollpost/static/favicon.svg" width="28" height="28" alt="Nollpost Snabel-noll logo" /> Nollpost
 
-**Nollpost** (*Swedish: "zero mail"*) is a local-first, zero-token multi-inbox triage board for **macOS Apple Mail**, featuring a strictly Archive-only workflow, deterministic RFC 8058 + Playwright unsubscribe runner, and persistent sender preference memory.
+**Nollpost** (*Swedish: "zero mail"*) is a local multi-inbox triage board for **macOS Apple Mail**, featuring a strictly Archive-only workflow, deterministic RFC 8058 + Playwright unsubscribe runner, and persistent sender preference memory.
 
 > **Safety & Privacy First:** Nollpost runs entirely on your Mac (`127.0.0.1` with an ephemeral session token), sends zero emails to external LLMs/APIs, and **never deletes emails** or touches Trash/Junk folders. See [PRIVACY.md](PRIVACY.md) for details.
 
