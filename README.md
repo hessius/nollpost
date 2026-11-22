@@ -73,7 +73,7 @@ nollpost stats
 nollpost missed
 ```
 
-On first run, Nollpost creates `~/.config/nollpost/config.toml` where you can customize scan limits, per-account Archive folder overrides, wanted domains, and billing keywords.
+On first run, Nollpost creates `~/.config/nollpost/config.toml` where you can customize scan limits, UI language (`ui_language = ""` auto-detects from your browser or supports `"en"` / `"sv"`, also configurable in **Settings**), per-account Archive folder overrides, wanted domains, and billing keywords.
 
 ## Gmail Archiving Strategies
 

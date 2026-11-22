@@ -398,9 +398,12 @@ def test_ui_and_api_support_arbitrary_accounts_and_consulting_visibility(tmp_pat
         assert sorted(st["briefing"]["per_account"].keys()) == ["Fastmail", "Personal", "Work"]
 
         app_js = client.get("/static/app.js").text
+        en_locale = client.get("/static/locales/en.json").text
         style_css = client.get("/static/style.css").text
         assert "Both (" not in app_js
-        assert "All Accounts (" in app_js
+        assert "Both (" not in en_locale
+        assert "filter.all_accounts" in app_js
+        assert "All Accounts (" in en_locale
         assert "accountToneClass" in app_js
         assert ".acct-c0" in style_css and ".acct-c5" in style_css
         assert ".acct.icloud" not in style_css
@@ -477,16 +480,20 @@ def test_scan_progress_and_ui_safety_controls(tmp_path: Path, monkeypatch):
 
         html = client.get(f"/?key={token}").text
         app_js = client.get("/static/app.js").text
+        en_locale = client.get("/static/locales/en.json").text
         assert 'id="help-btn"' in html
         assert 'id="btn-reset-actions"' in html
         assert "btn-reset-filters" in app_js
-        assert "Confirm Dismiss Safety Tray" in app_js
+        assert "confirm.tray_dismiss_title" in app_js
+        assert "Confirm Dismiss Safety Tray" in en_locale
         assert "data-tray-dismiss-uid" in app_js
-        assert "Outbound Email Warning" in app_js
-        assert "System Settings" in app_js
+        assert "confirm.warn_outbound" in app_js
+        assert "Outbound Email Warning" in en_locale
+        assert "System Settings" in en_locale
         assert "/api/scan/status" in app_js
         assert "\u2014" not in html
         assert "\u2014" not in app_js
+        assert "\u2014" not in en_locale
 
 
 def test_serve_startup_nonblocking_preload_and_terminal_guidance(tmp_path: Path, monkeypatch, capsys):

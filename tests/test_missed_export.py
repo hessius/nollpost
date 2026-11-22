@@ -209,5 +209,7 @@ def test_cli_and_web_missed_export_endpoints(tmp_path: Path, monkeypatch, capsys
         assert client.get("/api/missed/99999/export", headers={"X-Triage-Key": token}).status_code == 404
 
         app_js = client.get("/static/app.js").text
+        en_locale = client.get("/static/locales/en.json").json()
         assert "data-missed-copy-report" in app_js
-        assert "Copy Redacted Bug Report" in app_js
+        assert "missed_snap.copy_report" in app_js
+        assert en_locale["missed_snap.copy_report"] == "Copy Redacted Bug Report"

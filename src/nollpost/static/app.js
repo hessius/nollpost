@@ -1,27 +1,10 @@
 (() => {
-  const ACTION_LABELS = {
-    no_action: "No action",
-    mark_read: "Mark read",
-    read_open_link: "Read + Open link",
-    read_show_invoice: "Read + Show invoice",
-    decline_and_archive: "Decline & Arch",
-    draft_decline: "Draft Decline",
-    send_decline_and_archive: "Send Decline & Arch",
-    archive: "Archive",
-    archive_and_unsub: "Archive & Unsub",
-    unsub_only: "Unsub only",
-  };
-
-  const CATEGORIES = [
-    { id: "all", label: "All" },
-    { id: "attention", label: "Attention & Bills" },
-    { id: "updates", label: "Updates & Comments" },
-    { id: "consulting", label: "Consulting" },
-    { id: "newsletters", label: "Newsletters & Bots" },
-    { id: "missed", label: "Missed-Unsub Queue" },
-  ];
+  const CATEGORY_IDS = ["all", "attention", "updates", "consulting", "newsletters", "missed"];
 
   const state = {
+    locale: "en",
+    messages: {},
+    availableLocales: [],
     mode: "inbox",
     category: "all",
     account: "all",
@@ -57,6 +40,71 @@
       .replace(/'/g, "&#39;");
   }
 
+  function t(key, vars = {}) {
+    const raw = Object.prototype.hasOwnProperty.call(state.messages, key)
+      ? state.messages[key]
+      : key;
+    return String(raw).replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) =>
+      Object.prototype.hasOwnProperty.call(vars, name) && vars[name] !== undefined
+        ? String(vars[name])
+        : match
+    );
+  }
+
+  function tHtml(key, vars = {}, rawHtmlKeys = []) {
+    const safeVars = {};
+    const rawSet = new Set(rawHtmlKeys);
+    for (const [k, v] of Object.entries(vars)) {
+      safeVars[k] = rawSet.has(k) ? String(v ?? "") : escapeHtml(v);
+    }
+    return t(key, safeVars);
+  }
+
+  function actionLabel(act) {
+    const key = `action.${act}`;
+    return Object.prototype.hasOwnProperty.call(state.messages, key)
+      ? t(key)
+      : String(act || "");
+  }
+
+  function categoryLabel(id) {
+    const key = `cat.${id}`;
+    return Object.prototype.hasOwnProperty.call(state.messages, key)
+      ? t(key)
+      : String(id || "");
+  }
+
+  function translateStaticDom() {
+    document.documentElement.lang = state.locale || "en";
+    document.title = t("app.title");
+    for (const el of document.querySelectorAll("[data-i18n]")) {
+      const k = el.getAttribute("data-i18n");
+      if (k) el.textContent = t(k);
+    }
+    for (const el of document.querySelectorAll("[data-i18n-title]")) {
+      const k = el.getAttribute("data-i18n-title");
+      if (k) el.setAttribute("title", t(k));
+    }
+    for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+      const k = el.getAttribute("data-i18n-placeholder");
+      if (k) el.setAttribute("placeholder", t(k));
+    }
+    if (!state.data) {
+      if (qs("btn-exec-selected")) qs("btn-exec-selected").textContent = t("btn.exec_selected", { count: 0 });
+      if (qs("btn-exec-all")) qs("btn-exec-all").textContent = t("btn.exec_all", { count: 0 });
+    }
+  }
+
+  async function loadI18n(langOverride = "") {
+    const q = langOverride ? `?lang=${encodeURIComponent(langOverride)}` : "";
+    const payload = await api(`/api/i18n${q}`);
+    state.locale = payload.language || "en";
+    state.messages = payload.messages || {};
+    state.availableLocales = payload.available || [];
+    translateStaticDom();
+    if (state.data) render();
+  }
+
   function accountToneClass(name) {
     const s = String(name || "").toLowerCase();
     let hash = 5381;
@@ -76,24 +124,22 @@
 
   function renderRecoveryCard(rawMessage) {
     const perm = isMailPermissionError(rawMessage);
-    const title = perm
-      ? "Mail.app Automation Permission Required"
-      : "Could Not Scan Mail.app";
+    const title = perm ? t("err.permission_title") : t("err.scan_failed_title");
     const stepsHtml = perm
-      ? `<p>macOS blocked AppleScript access to Mail.app. Grant permission and retry:</p>
+      ? `<p>${t("err.permission_intro")}</p>
          <ol style="margin-left:18px;line-height:1.5;">
-           <li>Open <strong>System Settings → Privacy &amp; Security → Automation</strong>.</li>
-           <li>Enable <strong>Mail</strong> under your terminal app (e.g. Terminal, iTerm2, Ghostty) or Python.</li>
-           <li>Make sure Mail.app is open, or run <code>nollpost doctor</code> in your terminal to verify.</li>
+           <li>${t("err.permission_step1")}</li>
+           <li>${t("err.permission_step2")}</li>
+           <li>${t("err.permission_step3")}</li>
          </ol>`
-      : `<p>Nollpost encountered an error while reading Mail.app mailboxes. Make sure Mail.app is running and try again, or run <code>nollpost doctor</code> in your terminal.</p>`;
+      : `<p>${t("err.scan_failed_intro")}</p>`;
     return `
       <div class="empty-state scan-error">
-        <h3>${title}</h3>
+        <h3>${escapeHtml(title)}</h3>
         ${stepsHtml}
         <pre style="white-space:pre-wrap;word-break:break-word;max-width:100%;font-size:11px;background:var(--bg-primary);padding:8px 10px;border-radius:8px;border:1px solid var(--border);">${escapeHtml(rawMessage)}</pre>
         <div class="empty-state-actions">
-          <button class="btn small primary" data-retry-scan="1">Retry Scan</button>
+          <button class="btn small primary" data-retry-scan="1">${escapeHtml(t("err.retry_scan"))}</button>
         </div>
       </div>`;
   }
@@ -103,9 +149,9 @@
     resEl.dataset.kind = "error";
     resEl.classList.remove("hidden");
     const tip = isMailPermissionError(msg)
-      ? `<div style="margin-top:4px;font-size:11px;color:var(--text-secondary);">Permission tip: Check <strong>System Settings → Privacy &amp; Security → Automation</strong> (enable Mail) and run <code>nollpost doctor</code>.</div>`
+      ? `<div style="margin-top:4px;font-size:11px;color:var(--text-secondary);">${t("err.banner_tip")}</div>`
       : "";
-    resEl.innerHTML = `<div class="result-row"><div><span class="pill danger">error</span> ${escapeHtml(msg)}${tip}</div></div>`;
+    resEl.innerHTML = `<div class="result-row"><div><span class="pill danger">${escapeHtml(t("err.badge"))}</span> ${escapeHtml(msg)}${tip}</div></div>`;
   }
 
   async function api(path, options = {}) {
@@ -169,18 +215,16 @@
       ([name, c]) => `${name} (${c.total})`
     );
     const acctSuffix = acctParts.length ? ` · ${acctParts.join(" · ")}` : "";
-    qs("board-title").textContent =
-      state.mode === "catchup"
-        ? `Nollpost Archive Catch-Up${acctSuffix}`
-        : `Nollpost${acctSuffix}`;
+    const baseTitle = state.mode === "catchup" ? t("board.title_catchup") : t("board.title_inbox");
+    qs("board-title").textContent = `${baseTitle}${acctSuffix}`;
 
     const st = d.stats || {};
     qs("tally-pills").innerHTML = `
-      <span class="pill green">Lifetime: ${st.total_unsubscribed || 0} unsubbed (${st.unique_senders_unsubscribed || 0} senders)</span>
-      <span class="pill accent">${st.total_archived || 0} archived</span>
-      <span class="pill accent">${st.total_declined || 0} declined</span>
-      <span class="pill muted">0 deleted</span>
-      <span class="pill warn">Missed-unsub queue: ${st.missed_unsub_pending || 0}</span>
+      <span class="pill green">${escapeHtml(t("tally.lifetime_unsub", { total: st.total_unsubscribed || 0, senders: st.unique_senders_unsubscribed || 0 }))}</span>
+      <span class="pill accent">${escapeHtml(t("tally.archived", { count: st.total_archived || 0 }))}</span>
+      <span class="pill accent">${escapeHtml(t("tally.declined", { count: st.total_declined || 0 }))}</span>
+      <span class="pill muted">${escapeHtml(t("tally.zero_deleted"))}</span>
+      <span class="pill warn">${escapeHtml(t("tally.missed_queue", { count: st.missed_unsub_pending || 0 }))}</span>
     `;
 
     qs("mode-inbox").classList.toggle("active", state.mode === "inbox");
@@ -194,32 +238,38 @@
     const catPairs = nonNoopPairs(visItems);
     const selPairs = nonNoopPairs(selItems);
 
-    const catLabel = CATEGORIES.find((c) => c.id === state.category)?.label || "Current";
+    const catLabel = CATEGORY_IDS.includes(state.category)
+      ? categoryLabel(state.category)
+      : t("cat.current_fallback");
     qs("btn-reset-actions").disabled = catPairs.length === 0 || state.category === "missed";
-    qs("btn-exec-selected").textContent = `Execute Selected (${selPairs.length})`;
+    qs("btn-exec-selected").textContent = t("btn.exec_selected", { count: selPairs.length });
     qs("btn-exec-selected").disabled = selPairs.length === 0;
-    qs("btn-exec-category").textContent = `Execute ${catLabel} (${catPairs.length})`;
+    qs("btn-exec-category").textContent = t("btn.exec_category", { category: catLabel, count: catPairs.length });
     qs("btn-exec-category").disabled = catPairs.length === 0 || state.category === "missed";
-    qs("btn-exec-all").textContent = `Execute All Actions (${allPairs.length})`;
+    qs("btn-exec-all").textContent = t("btn.exec_all", { count: allPairs.length });
     qs("btn-exec-all").disabled = allPairs.length === 0;
 
     const counts = {};
     for (const p of allPairs) {
       counts[p.action] = (counts[p.action] || 0) + 1;
     }
-    const summaryBits = Object.entries(counts).map(([k, v]) => `${v} ${ACTION_LABELS[k] || k}`);
-    const warnTxt = (d.warnings || []).length ? ` | Warnings: ${d.warnings.join("; ")}` : "";
+    const summaryBits = Object.entries(counts).map(([k, v]) => `${v} ${actionLabel(k)}`);
+    const warnTxt = (d.warnings || []).length
+      ? t("batch.warnings", { warnings: d.warnings.join("; ") })
+      : "";
     qs("batch-summary").textContent =
-      (summaryBits.length ? `Queued defaults: ${summaryBits.join(" · ")}` : "No pending actions selected") + warnTxt;
+      (summaryBits.length
+        ? t("batch.queued_defaults", { summary: summaryBits.join(" · ") })
+        : t("batch.none_pending")) + warnTxt;
 
     const tray = d.tray || [];
     const trayEl = qs("safety-tray");
     if (tray.length > 0) {
       trayEl.classList.remove("hidden");
-      const names = tray.slice(0, 4).map((t) => escapeHtml(t.subject.slice(0, 36))).join(", ");
-      const more = tray.length > 4 ? ` +${tray.length - 4} more` : "";
-      qs("tray-text").innerHTML = `<strong>Step 2 Safety Tray:</strong> ${tray.length} opened item(s) waiting in Inbox (${names}${more})`;
-      qs("btn-tray-sweep").textContent = `Review & Sweep ${tray.length} Opened…`;
+      const names = tray.slice(0, 4).map((item) => escapeHtml(item.subject.slice(0, 36))).join(", ");
+      const more = tray.length > 4 ? escapeHtml(t("tray.more", { count: tray.length - 4 })) : "";
+      qs("tray-text").innerHTML = tHtml("tray.summary", { count: tray.length, names, more }, ["names", "more"]);
+      qs("btn-tray-sweep").textContent = t("tray.sweep_btn", { count: tray.length });
     } else {
       trayEl.classList.add("hidden");
     }
@@ -237,15 +287,15 @@
       newsletters: allItems.filter((i) => i.category === "newsletters").length,
       missed: (d.missed || []).length,
     };
-    const visibleCats = CATEGORIES.filter(
-      (c) => c.id !== "consulting" || d.consulting_enabled || catCounts.consulting > 0
+    const visibleCats = CATEGORY_IDS.filter(
+      (id) => id !== "consulting" || d.consulting_enabled || catCounts.consulting > 0
     );
-    if (!visibleCats.some((c) => c.id === state.category)) {
+    if (!visibleCats.includes(state.category)) {
       state.category = "all";
     }
     qs("category-tabs").innerHTML = visibleCats.map(
-      (c) =>
-        `<button class="tab ${state.category === c.id ? "active" : ""}" data-cat="${c.id}">${escapeHtml(c.label)} (${catCounts[c.id] || 0})</button>`
+      (id) =>
+        `<button class="tab ${state.category === id ? "active" : ""}" data-cat="${id}">${escapeHtml(categoryLabel(id))} (${catCounts[id] || 0})</button>`
     ).join("");
 
     const acctList = d.accounts || [];
@@ -255,7 +305,7 @@
     if (acctList.length <= 1) {
       qs("account-tabs").innerHTML = "";
     } else {
-      const accts = [{ id: "all", label: `All Accounts (${allItems.length})` }];
+      const accts = [{ id: "all", label: t("filter.all_accounts", { count: allItems.length }) }];
       for (const a of acctList) {
         const cnt = allItems.filter((i) => i.header.account === a.name).length;
         accts.push({ id: a.name, label: `${a.name} (${cnt})` });
@@ -287,7 +337,7 @@
   function renderMissedQueue() {
     const missed = state.data?.missed || [];
     if (!missed.length) {
-      qs("queue-container").innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);">No unresolved missed-unsub items queued.</div>`;
+      qs("queue-container").innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);">${escapeHtml(t("empty.missed"))}</div>`;
       return;
     }
     const rows = missed
@@ -300,17 +350,17 @@
           <td>
             <strong>${escapeHtml(m.sender)}</strong> · ${escapeHtml(m.subject)}
             <div class="sub-meta">
-              <span>Msg ID #${escapeHtml(m.internal_id)}</span>
+              <span>${escapeHtml(t("missed.msg_id", { id: m.internal_id }))}</span>
               <span>· ${escapeHtml(m.failure_reason)}</span>
             </div>
           </td>
           <td>
             <div class="seg">
-              <button data-missed-inspect="${m.id}">Inspect Snapshot</button>
-              ${firstLink ? `<button data-missed-open="${escapeHtml(firstLink)}">Open Link</button>` : ""}
-              ${firstLink ? `<button data-missed-retry="${m.id}">Retry Playwright</button>` : ""}
-              <button data-missed-mark-unsub="${m.id}">Mark Unsubscribed &amp; Archive</button>
-              <button data-missed-resolve="${m.id}">Dismiss</button>
+              <button data-missed-inspect="${m.id}">${escapeHtml(t("missed.inspect"))}</button>
+              ${firstLink ? `<button data-missed-open="${escapeHtml(firstLink)}">${escapeHtml(t("missed.open_link"))}</button>` : ""}
+              ${firstLink ? `<button data-missed-retry="${m.id}">${escapeHtml(t("missed.retry"))}</button>` : ""}
+              <button data-missed-mark-unsub="${m.id}">${escapeHtml(t("missed.mark_unsub_archive"))}</button>
+              <button data-missed-resolve="${m.id}">${escapeHtml(t("missed.dismiss"))}</button>
             </div>
           </td>
         </tr>`;
@@ -320,7 +370,7 @@
     qs("queue-container").innerHTML = `
       <table class="tbl">
         <thead>
-          <tr><th>Acct</th><th>Stage</th><th>Sender, Subject &amp; Failure Reason</th><th>Actions</th></tr>
+          <tr><th>${escapeHtml(t("tbl.col_acct"))}</th><th>${escapeHtml(t("tbl.col_stage"))}</th><th>${escapeHtml(t("tbl.col_missed_reason"))}</th><th>${escapeHtml(t("tbl.col_actions"))}</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`;
@@ -343,25 +393,23 @@
         const isCatchup = state.mode === "catchup";
         qs("queue-container").innerHTML = `
           <div class="empty-state inbox-zero">
-            <h3>${isCatchup ? "Archive Catch-Up Complete" : "Inbox Zero!"}</h3>
-            <p>${isCatchup
-              ? "No repeat newsletters needing unsubscription were found in your Archive folders."
-              : "All scanned inboxes are empty. Nothing queued or pending right now."}</p>
+            <h3>${escapeHtml(isCatchup ? t("empty.catchup_title") : t("empty.inbox_zero_title"))}</h3>
+            <p>${escapeHtml(isCatchup ? t("empty.catchup_body") : t("empty.inbox_zero_body"))}</p>
             <div class="empty-state-actions">
-              <button class="btn small primary" data-retry-scan="1">Refresh Scan</button>
+              <button class="btn small primary" data-retry-scan="1">${escapeHtml(t("ctrl.refresh"))}</button>
               ${!isCatchup
-                ? `<button class="btn small secondary" data-mode="catchup">Check Archive Catch-Up</button>`
-                : `<button class="btn small secondary" data-mode="inbox">Back to Daily Inbox</button>`}
+                ? `<button class="btn small secondary" data-mode="catchup">${escapeHtml(t("empty.check_catchup"))}</button>`
+                : `<button class="btn small secondary" data-mode="inbox">${escapeHtml(t("empty.back_inbox"))}</button>`}
             </div>
           </div>`;
         return;
       }
       qs("queue-container").innerHTML = `
         <div class="empty-state">
-          <h3>No emails match the current filters</h3>
-          <p>Adjust your search query, account tab, category tab, or Unread filter to see queued items.</p>
+          <h3>${escapeHtml(t("empty.filtered_title"))}</h3>
+          <p>${escapeHtml(t("empty.filtered_body"))}</p>
           <div class="empty-state-actions">
-            <button class="btn small primary" id="btn-reset-filters">Reset filters</button>
+            <button class="btn small primary" id="btn-reset-filters">${escapeHtml(t("empty.reset_filters"))}</button>
           </div>
         </div>`;
       return;
@@ -408,17 +456,17 @@
             const active = curAction === act;
             let title = "";
             if (!allowed && act === "archive_and_unsub") {
-              title = "Disabled: no reliable unsubscribe target found";
+              title = t("row.disabled_unsub_title");
             } else if (act === "read_open_link" && item.extracted?.pertinent_url) {
               title = item.extracted.pertinent_url;
             }
-            return `<button class="${active ? "active" : ""}" ${!allowed ? "disabled" : ""} title="${escapeHtml(title)}" data-uid="${escapeHtml(item.uid)}" data-act="${act}">${escapeHtml(ACTION_LABELS[act] || act)}</button>`;
+            return `<button class="${active ? "active" : ""}" ${!allowed ? "disabled" : ""} title="${escapeHtml(title)}" data-uid="${escapeHtml(item.uid)}" data-act="${act}">${escapeHtml(actionLabel(act))}</button>`;
           })
           .join("");
 
         const queueMissedBtn =
           item.no_unsub_found && state.mode === "inbox"
-            ? `<button class="btn small" data-enqueue-missed="${escapeHtml(item.uid)}">+ Queue Missed Unsub</button>`
+            ? `<button class="btn small" data-enqueue-missed="${escapeHtml(item.uid)}">${escapeHtml(t("row.queue_missed"))}</button>`
             : "";
 
         return `
@@ -430,17 +478,17 @@
             ${countBadge}
           </td>
           <td>
-            <strong>${escapeHtml(h.subject || "(no subject)")}</strong>
+            <strong>${escapeHtml(h.subject || t("row.no_subject"))}</strong>
             <div class="sub-meta">
               <span>${escapeHtml(h.sender)}</span>
               <span>· ${escapeHtml((h.date_received || "").slice(0, 16).replace("T", " "))}</span>
               ${badgesHtml}
               <select class="pref-select" data-pref-email="${escapeHtml(h.sender_email)}" data-pref-dom="${escapeHtml(h.sender_domain)}" data-pref-name="${escapeHtml(h.sender)}">
-                <option value="">Remember…</option>
-                <option value="always_keep">Always Keep / Updates</option>
-                <option value="archive">Always Archive</option>
-                <option value="mark_read">Always Mark Read</option>
-                <option value="clear">Clear Learned Rule</option>
+                <option value="">${escapeHtml(t("pref.remember"))}</option>
+                <option value="always_keep">${escapeHtml(t("pref.always_keep"))}</option>
+                <option value="archive">${escapeHtml(t("pref.always_archive"))}</option>
+                <option value="mark_read">${escapeHtml(t("pref.always_mark_read"))}</option>
+                <option value="clear">${escapeHtml(t("pref.clear"))}</option>
               </select>
               ${queueMissedBtn}
             </div>
@@ -455,10 +503,10 @@
         <thead>
           <tr>
             <th style="width:32px;"><input type="checkbox" id="master-cb" ${allVisibleSelected ? "checked" : ""} /></th>
-            <th>Acct</th>
-            <th>Category</th>
-            <th>Subject, Sender &amp; Signals</th>
-            <th>Per-Email Action Toggle</th>
+            <th>${escapeHtml(t("tbl.col_acct"))}</th>
+            <th>${escapeHtml(t("tbl.col_category"))}</th>
+            <th>${escapeHtml(t("tbl.col_subject"))}</th>
+            <th>${escapeHtml(t("tbl.col_action"))}</th>
           </tr>
         </thead>
         <tbody>${rowsHtml}</tbody>
@@ -473,7 +521,8 @@
 
   async function loadState(refresh = false) {
     const seq = ++state.loadSeq;
-    qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--text-secondary);" id="scan-status-text">Scanning Mail.app (${escapeHtml(state.mode)})…</div>`;
+    const modeLabel = state.mode === "catchup" ? t("mode.catchup") : t("mode.inbox");
+    qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--text-secondary);" id="scan-status-text">${escapeHtml(t("scan.loading", { mode: modeLabel }))}</div>`;
     let pollTimer = null;
     if (refresh || !state.data || state.data.mode !== state.mode) {
       pollTimer = setInterval(async () => {
@@ -530,51 +579,51 @@
       .join(" | ");
 
     const statsGrid = Object.entries(preview.counts || {})
-      .map(([act, cnt]) => `<div class="confirm-stat"><strong>${cnt}</strong>${escapeHtml(ACTION_LABELS[act] || act)}</div>`)
+      .map(([act, cnt]) => `<div class="confirm-stat"><strong>${cnt}</strong>${escapeHtml(actionLabel(act))}</div>`)
       .join("");
 
     let detailsHtml = "";
     if ((preview.send_declines || []).length > 0) {
-      detailsHtml += `<div class="confirm-warning danger"><strong>Outbound Email Warning:</strong> This run will automatically send <strong>${preview.send_declines.length}</strong> real email reply(s) from Mail.app. Double-check the recipients below before confirming.</div>`;
+      detailsHtml += `<div class="confirm-warning danger">${tHtml("confirm.warn_outbound", { count: preview.send_declines.length })}</div>`;
     }
     if ((preview.unsubs || []).length > 10) {
-      detailsHtml += `<div class="confirm-warning warn"><strong>Large Unsubscribe Batch:</strong> You are about to unsubscribe from <strong>${preview.unsubs.length}</strong> senders at once. Review the list below to make sure no wanted senders are included.</div>`;
+      detailsHtml += `<div class="confirm-warning warn">${tHtml("confirm.warn_large_unsub", { count: preview.unsubs.length })}</div>`;
     }
     if (archSummary) {
-      detailsHtml += `<div class="preview-box"><strong>Archive Destinations (Mark Read + Move):</strong> ${escapeHtml(archSummary)}</div>`;
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.archive_dest"))}</strong> ${escapeHtml(archSummary)}</div>`;
     }
     if ((preview.links_to_open || []).length) {
-      detailsHtml += `<div class="preview-box"><strong>Open in Browser + Safety Tray:</strong><br/>${preview.links_to_open
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.open_links"))}</strong><br/>${preview.links_to_open
         .map((l) => `• ${escapeHtml(l.subject)} → <code>${escapeHtml(l.url)}</code>`)
         .join("<br/>")}</div>`;
     }
     if ((preview.pdfs_to_open || []).length) {
-      detailsHtml += `<div class="preview-box"><strong>Open Invoices in Preview + Safety Tray:</strong><br/>${preview.pdfs_to_open
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.open_pdfs"))}</strong><br/>${preview.pdfs_to_open
         .map((p) => `• ${escapeHtml(p.subject)} (${escapeHtml(p.filename)})`)
         .join("<br/>")}</div>`;
     }
     if ((preview.unsubs || []).length) {
-      detailsHtml += `<div class="preview-box"><strong>Unsubscribe Senders (${preview.unsubs.length}):</strong><br/>${preview.unsubs
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.unsub_senders", { count: preview.unsubs.length }))}</strong><br/>${preview.unsubs
         .map((u) => `• ${escapeHtml(u.sender)} [${escapeHtml(u.method)}] → <code>${escapeHtml(u.url)}</code>`)
         .join("<br/>")}</div>`;
     }
     if ((preview.declines || []).length) {
-      detailsHtml += `<div class="preview-box"><strong>Consulting Declines (Playwright button):</strong><br/>${preview.declines
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.consulting_declines"))}</strong><br/>${preview.declines
         .map((d) => `• ${escapeHtml(d.sender)} · ${escapeHtml(d.subject)} → <code>${escapeHtml(d.url)}</code>`)
         .join("<br/>")}</div>`;
     }
     if ((preview.draft_declines || []).length) {
-      detailsHtml += `<div class="preview-box"><strong>Boilerplate Drafts in Mail.app (kept in Inbox):</strong><br/>${preview.draft_declines
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.draft_declines"))}</strong><br/>${preview.draft_declines
         .map((d) => `• ${escapeHtml(d.sender)} · ${escapeHtml(d.subject)}`)
         .join("<br/>")}</div>`;
     }
     if ((preview.send_declines || []).length) {
-      detailsHtml += `<div class="preview-box"><strong>Auto-Send Boilerplate Replies &amp; Archive:</strong><br/>${preview.send_declines
+      detailsHtml += `<div class="preview-box"><strong>${escapeHtml(t("confirm.send_declines"))}</strong><br/>${preview.send_declines
         .map((d) => `• ${escapeHtml(d.sender)} · ${escapeHtml(d.subject)}`)
         .join("<br/>")}<pre style="margin-top:6px;">${escapeHtml(preview.boilerplate_preview)}</pre></div>`;
     }
 
-    qs("modal-title").textContent = `${title} (${preview.total_actions} actions)`;
+    qs("modal-title").textContent = t("confirm.title_with_count", { title, count: preview.total_actions });
     qs("modal-body").innerHTML = `<div class="confirm-grid">${statsGrid}</div>${detailsHtml}`;
     qs("modal-confirm").disabled = false;
     qs("confirm-modal").classList.remove("hidden");
@@ -590,7 +639,7 @@
     const resEl = qs("results-banner");
     resEl.classList.add("hidden");
     progEl.classList.remove("hidden");
-    progEl.textContent = `Running 0/${pairs.length} actions…`;
+    progEl.textContent = t("run.starting", { total: pairs.length });
 
     try {
       const { job_id } = await api("/api/execute/run", {
@@ -605,7 +654,7 @@
       while (true) {
         await new Promise((r) => setTimeout(r, 600));
         const job = await api(`/api/jobs/${encodeURIComponent(job_id)}`);
-        progEl.textContent = `Running ${job.done}/${job.total}: ${job.message}`;
+        progEl.textContent = t("run.progress", { done: job.done, total: job.total, message: job.message });
         if (job.status === "completed") {
           progEl.classList.add("hidden");
           renderJobResults(job.results || [], job.scan_warning || "");
@@ -613,7 +662,7 @@
           break;
         }
         if (job.status === "error") {
-          progEl.textContent = `Execution error: ${job.message}`;
+          progEl.textContent = t("run.error", { message: job.message });
           break;
         }
       }
@@ -630,22 +679,22 @@
     resEl.dataset.kind = "results";
     resEl.classList.remove("hidden");
     const warnRow = scanWarning
-      ? `<div class="result-row"><div><span class="pill warn">warning</span> ${escapeHtml(scanWarning)}</div></div>`
+      ? `<div class="result-row"><div><span class="pill warn">${escapeHtml(t("results.warning"))}</span> ${escapeHtml(scanWarning)}</div></div>`
       : "";
     const rows = results
       .map((r, idx) => {
         const cls = r.status === "ok" || r.status === "drafted" ? "green" : r.status === "blocked_captcha" ? "warn" : "danger";
         const btns = [];
         if (r.status === "blocked_captcha" && isSafeHttpUrl(r.opened_target)) {
-          btns.push(`<button class="btn small" data-open-url="${escapeHtml(r.opened_target)}">Open in Browser</button>`);
+          btns.push(`<button class="btn small" data-open-url="${escapeHtml(r.opened_target)}">${escapeHtml(t("results.open_browser"))}</button>`);
         }
         if (r.screenshot_path) {
-          btns.push(`<button class="btn small" data-proof-idx="${idx}">View Screenshot</button>`);
+          btns.push(`<button class="btn small" data-proof-idx="${idx}">${escapeHtml(t("results.view_screenshot"))}</button>`);
         } else if (isSafeHttpUrl(r.opened_target) && ["archive_and_unsub", "unsub_only", "decline_and_archive"].includes(r.action)) {
-          btns.push(`<button class="btn small" data-proof-idx="${idx}">View Proof</button>`);
+          btns.push(`<button class="btn small" data-proof-idx="${idx}">${escapeHtml(t("results.view_proof"))}</button>`);
         }
         if (r.status !== "ok" && ["archive_and_unsub", "unsub_only"].includes(r.action)) {
-          const lbl = r.action === "unsub_only" ? "Mark Unsubscribed" : "Mark Unsubscribed & Archive";
+          const lbl = r.action === "unsub_only" ? t("results.mark_unsub") : t("results.mark_unsub_archive");
           btns.push(`<button class="btn small" data-mark-unsub-idx="${idx}">${escapeHtml(lbl)}</button>`);
         }
         return `<div class="result-row">
@@ -654,28 +703,28 @@
         </div>`;
       })
       .join("");
-    resEl.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;margin-bottom:6px;"><strong>Last Run Results (${results.length})</strong><span style="font-size:11px;color:var(--text-secondary);">Note: Results and screenshots reset when you start the next run.</span></div>${warnRow}${rows}`;
+    resEl.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;margin-bottom:6px;"><strong>${escapeHtml(t("results.header", { count: results.length }))}</strong><span style="font-size:11px;color:var(--text-secondary);">${escapeHtml(t("results.reset_note"))}</span></div>${warnRow}${rows}`;
   }
 
   function showProofModal(idx) {
     const r = state.lastJobResults[idx];
     if (!r) return;
-    qs("snap-title").textContent = `Execution Proof: ${r.sender}`;
+    qs("snap-title").textContent = t("proof.title", { sender: r.sender });
     const shotName = r.screenshot_path ? r.screenshot_path.split("/").pop() : "";
     const shotHtml = shotName
-      ? `<div class="preview-box"><strong>Confirmation Screenshot:</strong><br/><img src="/api/screenshots/${encodeURIComponent(shotName)}" style="max-width:100%;border-radius:6px;margin-top:6px;" /></div>`
-      : `<div class="preview-box" style="color:var(--text-secondary);">Completed via Tier 1 HTTP POST (no browser screenshot captured).</div>`;
+      ? `<div class="preview-box"><strong>${escapeHtml(t("proof.screenshot"))}</strong><br/><img src="/api/screenshots/${encodeURIComponent(shotName)}" style="max-width:100%;border-radius:6px;margin-top:6px;" /></div>`
+      : `<div class="preview-box" style="color:var(--text-secondary);">${escapeHtml(t("proof.tier1_note"))}</div>`;
     const urlHtml = isSafeHttpUrl(r.opened_target)
-      ? `<div class="preview-box"><strong>Endpoint URL:</strong><br/><code>${escapeHtml(r.opened_target)}</code></div>`
+      ? `<div class="preview-box"><strong>${escapeHtml(t("proof.endpoint"))}</strong><br/><code>${escapeHtml(r.opened_target)}</code></div>`
       : "";
     const markBtnHtml =
       r.status !== "ok" && ["archive_and_unsub", "unsub_only"].includes(r.action)
         ? `<div style="margin-top:8px;"><button class="btn small primary" data-mark-unsub-idx="${idx}">${escapeHtml(
-            r.action === "unsub_only" ? "Mark as Unsubscribed" : "Mark as Unsubscribed & Archive"
+            r.action === "unsub_only" ? t("proof.mark_unsub") : t("proof.mark_unsub_archive")
           )}</button></div>`
         : "";
     qs("snap-body").innerHTML = `
-      <div class="preview-box"><strong>Status:</strong> ${escapeHtml(r.status)}<br/><strong>Action:</strong> ${escapeHtml(ACTION_LABELS[r.action] || r.action)}<br/><strong>Detail:</strong> ${escapeHtml(r.detail)}${markBtnHtml}</div>
+      <div class="preview-box"><strong>${escapeHtml(t("proof.status"))}</strong> ${escapeHtml(r.status)}<br/><strong>${escapeHtml(t("proof.action"))}</strong> ${escapeHtml(actionLabel(r.action))}<br/><strong>${escapeHtml(t("proof.detail"))}</strong> ${escapeHtml(r.detail)}${markBtnHtml}</div>
       ${urlHtml}
       ${shotHtml}
     `;
@@ -685,7 +734,7 @@
   async function openTrayConfirmation() {
     const tray = state.data?.tray || [];
     if (!tray.length) return;
-    const uids = tray.map((t) => t.message_uid);
+    const uids = tray.map((tItem) => tItem.message_uid);
     const prev = await api("/api/tray/sweep/preview", {
       method: "POST",
       body: JSON.stringify({ uids }),
@@ -693,7 +742,7 @@
     const destStr = Object.entries(prev.archive_targets || {})
       .map(([a, b]) => Object.entries(b).map(([m, c]) => `${a} → ${m} (${c})`).join(", "))
       .join(" | ");
-    qs("modal-title").textContent = `Confirm Step 2 Sweep (${prev.count} opened items)`;
+    qs("modal-title").textContent = t("confirm.tray_sweep_title", { count: prev.count });
     const itemRows = (prev.items || [])
       .map((i) => {
         const bestUrl = isSafeHttpUrl(i.latest_pertinent_url)
@@ -703,12 +752,12 @@
           : "";
         const changedTag =
           i.latest_pertinent_url && i.opened_target && i.latest_pertinent_url !== i.opened_target
-            ? ` <span class="pill accent">Updated link</span>`
+            ? ` <span class="pill accent">${escapeHtml(t("confirm.updated_link"))}</span>`
             : "";
         const reopenBtn = bestUrl
-          ? ` <button type="button" class="btn small" data-open-url="${escapeHtml(bestUrl)}">Re-open Link</button>`
+          ? ` <button type="button" class="btn small" data-open-url="${escapeHtml(bestUrl)}">${escapeHtml(t("confirm.reopen_link"))}</button>`
           : "";
-        const dismissItemBtn = `<button type="button" class="btn small secondary" data-tray-dismiss-uid="${escapeHtml(i.uid)}">Dismiss</button>`;
+        const dismissItemBtn = `<button type="button" class="btn small secondary" data-tray-dismiss-uid="${escapeHtml(i.uid)}">${escapeHtml(t("confirm.dismiss_item"))}</button>`;
         const urlLine = bestUrl ? `<div style="margin-top:2px;font-size:11px;color:var(--text-secondary);word-break:break-all;"><code>${escapeHtml(bestUrl)}</code></div>` : "";
         return `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;">
           <div>• [${escapeHtml(i.account)}] <strong>${escapeHtml(i.subject)}</strong> · ${escapeHtml(i.sender)}${changedTag}${urlLine}</div>
@@ -717,7 +766,7 @@
       })
       .join("");
     qs("modal-body").innerHTML = `
-      <div class="preview-box"><strong>Archive Destinations:</strong> ${escapeHtml(destStr)}</div>
+      <div class="preview-box"><strong>${escapeHtml(t("confirm.tray_sweep_archive"))}</strong> ${escapeHtml(destStr)}</div>
       <div class="preview-box">${itemRows}</div>
     `;
     qs("modal-confirm").disabled = false;
@@ -732,44 +781,44 @@
   function showMissedSnapshot(id) {
     const entry = (state.data?.missed || []).find((m) => m.id === id);
     if (!entry) return;
-    qs("snap-title").textContent = `Missed Unsubscribe #${entry.id}: ${entry.sender}`;
+    qs("snap-title").textContent = t("missed_snap.title", { id: entry.id, sender: entry.sender });
     const links = (entry.candidate_links || [])
       .filter((l) => isSafeHttpUrl(l.href))
-      .map((l) => `• ${escapeHtml(l.text || "(no text)")} → <a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.href)}</a>`)
+      .map((l) => `• ${escapeHtml(l.text || t("missed_snap.no_text"))} → <a href="${escapeHtml(l.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.href)}</a>`)
       .join("<br/>");
     const shotName = entry.screenshot_path ? entry.screenshot_path.split("/").pop() : "";
     const shotHtml = shotName
-      ? `<div class="preview-box"><strong>Screenshot:</strong><br/><img src="/api/screenshots/${encodeURIComponent(shotName)}" style="max-width:100%;border-radius:6px;margin-top:6px;" /></div>`
+      ? `<div class="preview-box"><strong>${escapeHtml(t("missed_snap.screenshot"))}</strong><br/><img src="/api/screenshots/${encodeURIComponent(shotName)}" style="max-width:100%;border-radius:6px;margin-top:6px;" /></div>`
       : "";
     const finalUrlHtml = isSafeHttpUrl(entry.final_url)
-      ? `<br/><strong>Target URL:</strong> <a href="${escapeHtml(entry.final_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.final_url)}</a>`
+      ? `<br/><strong>${escapeHtml(t("missed_snap.target_url"))}</strong> <a href="${escapeHtml(entry.final_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.final_url)}</a>`
       : "";
     qs("snap-body").innerHTML = `
-      <div class="preview-box"><strong>Reason:</strong> ${escapeHtml(entry.failure_reason)}<br/><strong>Mail ID:</strong> ${escapeHtml(entry.account)}/${escapeHtml(entry.mailbox)} #${escapeHtml(entry.internal_id)}${finalUrlHtml}<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><button class="btn small primary" data-missed-mark-unsub="${entry.id}">Mark as Unsubscribed &amp; Archive</button><button class="btn small secondary" data-missed-copy-report="${entry.id}">Copy Redacted Bug Report</button><span id="missed-copy-status" style="font-size:11px;color:var(--text-secondary);"></span></div></div>
+      <div class="preview-box"><strong>${escapeHtml(t("missed_snap.reason"))}</strong> ${escapeHtml(entry.failure_reason)}<br/><strong>${escapeHtml(t("missed_snap.mail_id"))}</strong> ${escapeHtml(entry.account)}/${escapeHtml(entry.mailbox)} #${escapeHtml(entry.internal_id)}${finalUrlHtml}<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><button class="btn small primary" data-missed-mark-unsub="${entry.id}">${escapeHtml(t("proof.mark_unsub_archive"))}</button><button class="btn small secondary" data-missed-copy-report="${entry.id}">${escapeHtml(t("missed_snap.copy_report"))}</button><span id="missed-copy-status" style="font-size:11px;color:var(--text-secondary);"></span></div></div>
       <div id="missed-redacted-preview" class="preview-box hidden"></div>
       ${shotHtml}
-      <div class="preview-box"><strong>Candidate Links:</strong><br/>${links || "(none)"}</div>
-      <div class="preview-box"><strong>Headers:</strong><pre>${escapeHtml(entry.headers_snapshot)}</pre></div>
-      <div class="preview-box"><strong>Footer HTML Snippet:</strong><pre>${escapeHtml(entry.footer_html_snapshot)}</pre></div>
+      <div class="preview-box"><strong>${escapeHtml(t("missed_snap.candidate_links"))}</strong><br/>${links || escapeHtml(t("missed_snap.none"))}</div>
+      <div class="preview-box"><strong>${escapeHtml(t("missed_snap.headers"))}</strong><pre>${escapeHtml(entry.headers_snapshot)}</pre></div>
+      <div class="preview-box"><strong>${escapeHtml(t("missed_snap.footer"))}</strong><pre>${escapeHtml(entry.footer_html_snapshot)}</pre></div>
     `;
     qs("snapshot-modal").classList.remove("hidden");
   }
 
   function showQuickGuideModal() {
-    qs("snap-title").textContent = "Nollpost Quick Guide";
+    qs("snap-title").textContent = t("guide.title");
     qs("snap-body").innerHTML = `
       <div class="preview-box">
-        <strong>Archive-Only Guarantee</strong>
-        <p style="margin-top:4px;line-height:1.45;">Nollpost never deletes emails. Archiving marks a message read and moves it to that account's configured Archive mailbox.</p>
+        <strong>${escapeHtml(t("guide.archive_title"))}</strong>
+        <p style="margin-top:4px;line-height:1.45;">${escapeHtml(t("guide.archive_body"))}</p>
       </div>
       <div class="preview-box">
-        <strong>Key Concepts</strong>
+        <strong>${escapeHtml(t("guide.concepts_title"))}</strong>
         <ul class="guide-list" style="margin-top:6px;">
-          <li><strong>Step 2 Safety Tray:</strong> Items opened via <em>Read + Open link</em> or <em>Read + Show invoice</em> stay in your Mail.app Inbox and appear in the Safety Tray so you can finish reading before clicking <em>Review &amp; Sweep Opened…</em> to archive them.</li>
-          <li><strong>Archive Catch-Up:</strong> Scans your Archive folders for repeat promotional newsletters and offers <em>Unsub only</em> without modifying Inbox state.</li>
-          <li><strong>Missed-Unsub Queue:</strong> Stores senders where automatic unsubscribe lacked a reliable link or failed in headless mode. Inspect snapshots, retry, or mark resolved once handled manually.</li>
-          <li><strong>Show Browser:</strong> Leave unchecked for background headless Playwright runs; check it to watch browser interactions live.</li>
-          <li><strong>Remember… dropdown:</strong> Teach Nollpost per sender (<em>Always Keep</em>, <em>Always Archive</em>, or <em>Always Mark Read</em>).</li>
+          <li>${t("guide.item_tray")}</li>
+          <li>${t("guide.item_catchup")}</li>
+          <li>${t("guide.item_missed")}</li>
+          <li>${t("guide.item_browser")}</li>
+          <li>${t("guide.item_remember")}</li>
         </ul>
       </div>
     `;
@@ -823,97 +872,111 @@
       ? (a.known_accounts || []).map((k) => `${k} = Archive`).join("\n")
       : "iCloud = Archive";
 
-    qs("snap-title").textContent = "Nollpost Settings";
+    const uiLangs = u.available_ui_languages || state.availableLocales || [{ code: "en", name: "English" }];
+    const currentUiLang = String(u.ui_language || "");
+    const uiLangOpts = [
+      `<option value="" ${currentUiLang === "" ? "selected" : ""}>${escapeHtml(t("settings.ui_language_auto"))}</option>`,
+      ...uiLangs.map(
+        (loc) =>
+          `<option value="${escapeHtml(loc.code)}" ${currentUiLang === loc.code ? "selected" : ""}>${escapeHtml(loc.name)} (${escapeHtml(loc.code)})</option>`
+      ),
+    ].join("");
+
+    qs("snap-title").textContent = t("settings.title");
     qs("snap-body").innerHTML = `
-      <div style="font-size:11px;color:var(--text-secondary);">Config file: <code>${escapeHtml(cfg.config_path || "")}</code></div>
+      <div style="font-size:11px;color:var(--text-secondary);">${escapeHtml(t("settings.config_file"))} <code>${escapeHtml(cfg.config_path || "")}</code></div>
       <div class="preview-box" style="max-height:none;">
-        <strong>Scan &amp; Archiving</strong>
+        <strong>${escapeHtml(t("settings.section_scan"))}</strong>
         <div class="settings-grid" style="margin-top:8px;">
           <div class="settings-field">
-            <label for="cfg-max-inbox">Max Inbox Messages (1–5000)</label>
+            <label for="cfg-ui-language">${escapeHtml(t("settings.ui_language"))}</label>
+            <select id="cfg-ui-language">${uiLangOpts}</select>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-max-inbox">${escapeHtml(t("settings.max_inbox"))}</label>
             <input id="cfg-max-inbox" type="number" min="1" max="5000" value="${Number(u.max_inbox_messages || 500)}" />
           </div>
           <div class="settings-field">
-            <label for="cfg-catchup-limit">Catch-Up Scan Limit (1–5000)</label>
+            <label for="cfg-catchup-limit">${escapeHtml(t("settings.catchup_limit"))}</label>
             <input id="cfg-catchup-limit" type="number" min="1" max="5000" value="${Number(u.catchup_scan_limit || 200)}" />
           </div>
           <div class="settings-field">
-            <label for="cfg-catchup-days">Catch-Up Days Back (1–365)</label>
+            <label for="cfg-catchup-days">${escapeHtml(t("settings.catchup_days"))}</label>
             <input id="cfg-catchup-days" type="number" min="1" max="365" value="${Number(u.catchup_days_back || 14)}" />
           </div>
           <div class="settings-field">
-            <label for="cfg-gmail-strategy">Gmail Archive Strategy</label>
+            <label for="cfg-gmail-strategy">${escapeHtml(t("settings.gmail_strategy"))}</label>
             <select id="cfg-gmail-strategy">${stratOpts}</select>
           </div>
         </div>
         <div style="margin-top:8px;">
           <label class="toggle-check">
             <input type="checkbox" id="cfg-mark-read" ${u.mark_read_on_archive !== false ? "checked" : ""} />
-            <span>Mark messages as read when archiving</span>
+            <span>${escapeHtml(t("settings.mark_read"))}</span>
           </label>
         </div>
         <div class="settings-field" style="margin-top:8px;">
-          <label for="cfg-archive-map">Per-Account Archive Overrides (one <code>Account = Mailbox</code> per line; Trash/Junk blocked)</label>
+          <label for="cfg-archive-map">${t("settings.archive_map")}</label>
           <textarea id="cfg-archive-map" placeholder="${escapeHtml(acctPlaceholder)}">${escapeHtml(archLines)}</textarea>
         </div>
       </div>
 
       <div class="preview-box" style="max-height:none;">
-        <strong>Domains, Keywords &amp; Rule Packs</strong>
-        <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px;">${packChecks || "<em>No built-in packs found</em>"}</div>
+        <strong>${escapeHtml(t("settings.section_rules"))}</strong>
+        <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px;">${packChecks || `<em>${escapeHtml(t("settings.no_packs"))}</em>`}</div>
         <div class="settings-grid" style="margin-top:8px;">
           <div class="settings-field">
-            <label for="cfg-wanted-domains">Wanted Domains (comma or newline separated)</label>
+            <label for="cfg-wanted-domains">${escapeHtml(t("settings.wanted_domains"))}</label>
             <textarea id="cfg-wanted-domains">${escapeHtml((p.wanted_domains || []).join(", "))}</textarea>
           </div>
           <div class="settings-field">
-            <label for="cfg-bill-keywords">Bill &amp; Finance Keywords</label>
+            <label for="cfg-bill-keywords">${escapeHtml(t("settings.bill_keywords"))}</label>
             <textarea id="cfg-bill-keywords">${escapeHtml((p.bill_keywords || []).join(", "))}</textarea>
           </div>
           <div class="settings-field">
-            <label for="cfg-transactional-domains">Transactional / Delivery Domains</label>
+            <label for="cfg-transactional-domains">${escapeHtml(t("settings.transactional_domains"))}</label>
             <textarea id="cfg-transactional-domains">${escapeHtml((p.transactional_domains || []).join(", "))}</textarea>
           </div>
           <div class="settings-field">
-            <label for="cfg-browser-locale">Browser Locale Override (blank = ${escapeHtml(b.effective_locale || "en-US")})</label>
-            <input id="cfg-browser-locale" type="text" value="${escapeHtml(b.locale || "")}" placeholder="e.g. sv-SE or en-US" />
-            <label for="cfg-accept-lang" style="margin-top:4px;">Accept-Language Override</label>
+            <label for="cfg-browser-locale">${escapeHtml(t("settings.browser_locale", { effective: b.effective_locale || "en-US" }))}</label>
+            <input id="cfg-browser-locale" type="text" value="${escapeHtml(b.locale || "")}" placeholder="${escapeHtml(t("settings.browser_locale_placeholder"))}" />
+            <label for="cfg-accept-lang" style="margin-top:4px;">${escapeHtml(t("settings.accept_lang"))}</label>
             <input id="cfg-accept-lang" type="text" value="${escapeHtml(b.accept_language || "")}" placeholder="${escapeHtml(b.effective_accept_language || "en-US,en;q=0.9")}" />
           </div>
         </div>
       </div>
 
       <div class="preview-box" style="max-height:none;">
-        <strong>Consulting Outreach</strong>
+        <strong>${escapeHtml(t("settings.section_consulting"))}</strong>
         <div style="margin-top:6px;">
           <label class="toggle-check">
             <input type="checkbox" id="cfg-consult-enabled" ${c.enabled ? "checked" : ""} />
-            <span>Enable Consulting Outreach classification</span>
+            <span>${escapeHtml(t("settings.consulting_enable"))}</span>
           </label>
         </div>
         <div class="settings-grid" style="margin-top:8px;">
           <div class="settings-field">
-            <label for="cfg-consult-networks">Consulting Networks</label>
+            <label for="cfg-consult-networks">${escapeHtml(t("settings.consulting_networks"))}</label>
             <textarea id="cfg-consult-networks">${escapeHtml((c.networks || []).join(", "))}</textarea>
           </div>
           <div class="settings-field">
-            <label for="cfg-consult-match">Match Keywords</label>
+            <label for="cfg-consult-match">${escapeHtml(t("settings.consulting_match"))}</label>
             <textarea id="cfg-consult-match">${escapeHtml((c.match_keywords || []).join(", "))}</textarea>
           </div>
           <div class="settings-field">
-            <label for="cfg-consult-negative">Negative Keywords</label>
+            <label for="cfg-consult-negative">${escapeHtml(t("settings.consulting_negative"))}</label>
             <textarea id="cfg-consult-negative">${escapeHtml((c.negative_keywords || []).join(", "))}</textarea>
           </div>
           <div class="settings-field">
-            <label for="cfg-consult-boilerplate">Decline Boilerplate</label>
+            <label for="cfg-consult-boilerplate">${escapeHtml(t("settings.consulting_boilerplate"))}</label>
             <textarea id="cfg-consult-boilerplate">${escapeHtml(c.decline_boilerplate || "")}</textarea>
           </div>
         </div>
       </div>
 
       <div class="settings-footer">
-        <span id="settings-status" class="modal-status">Changes save to config.toml and apply on the next scan without restarting.</span>
-        <button class="btn small primary" id="btn-save-settings">Save Settings &amp; Rescan</button>
+        <span id="settings-status" class="modal-status">${escapeHtml(t("settings.status_hint"))}</span>
+        <button class="btn small primary" id="btn-save-settings">${escapeHtml(t("settings.save_btn"))}</button>
       </div>
     `;
     qs("snapshot-modal").classList.remove("hidden");
@@ -921,13 +984,13 @@
 
   function formatSenderRuleStatus(row) {
     const tags = [];
-    if (row.preferred_action === "always_keep") tags.push(`<span class="pill green">Always Keep</span>`);
-    else if (row.preferred_action === "archive") tags.push(`<span class="pill accent">Always Archive</span>`);
-    else if (row.preferred_action === "mark_read") tags.push(`<span class="pill muted">Always Mark Read</span>`);
+    if (row.preferred_action === "always_keep") tags.push(`<span class="pill green">${escapeHtml(t("rules.always_keep"))}</span>`);
+    else if (row.preferred_action === "archive") tags.push(`<span class="pill accent">${escapeHtml(t("rules.always_archive"))}</span>`);
+    else if (row.preferred_action === "mark_read") tags.push(`<span class="pill muted">${escapeHtml(t("rules.always_mark_read"))}</span>`);
     if (row.unsubscribed_at || row.unsub_count > 0) {
-      tags.push(`<span class="pill warn">Unsubscribed ×${Number(row.unsub_count || 0)}</span>`);
+      tags.push(`<span class="pill warn">${escapeHtml(t("rules.unsub_badge", { count: Number(row.unsub_count || 0) }))}</span>`);
     }
-    if (!tags.length) tags.push(`<span class="pill muted">Seen</span>`);
+    if (!tags.length) tags.push(`<span class="pill muted">${escapeHtml(t("rules.seen_badge"))}</span>`);
     return tags.join(" ");
   }
 
@@ -964,24 +1027,24 @@
               <td style="font-size:11px;color:var(--text-secondary);">${escapeHtml((r.last_seen_at || "").slice(0, 16).replace("T", " "))}</td>
               <td>
                 <select class="pref-select rule-edit-select" data-rule-key="${escapeHtml(r.sender_key)}">
-                  <option value="">Change…</option>
-                  <option value="always_keep">Always Keep</option>
-                  <option value="archive">Always Archive</option>
-                  <option value="mark_read">Always Mark Read</option>
-                  <option value="clear">Clear Learned Rule</option>
-                  <option value="delete">Delete Entry</option>
+                  <option value="">${escapeHtml(t("rules.change_placeholder"))}</option>
+                  <option value="always_keep">${escapeHtml(t("rules.always_keep"))}</option>
+                  <option value="archive">${escapeHtml(t("rules.always_archive"))}</option>
+                  <option value="mark_read">${escapeHtml(t("rules.always_mark_read"))}</option>
+                  <option value="clear">${escapeHtml(t("pref.clear"))}</option>
+                  <option value="delete">${escapeHtml(t("rules.delete_entry"))}</option>
                 </select>
               </td>
             </tr>`;
           })
           .join("")
-      : `<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:16px;">No sender memory records match the current filter.</td></tr>`;
+      : `<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:16px;">${escapeHtml(t("rules.empty"))}</td></tr>`;
   }
 
   function renderSenderRulesRowsOnly() {
     const items = state.rulesItems || [];
     const allSel = items.length > 0 && items.every((r) => state.rulesSelectedKeys.has(r.sender_key));
-    qs("snap-title").textContent = `Sender Rules & Memory (${items.length})`;
+    qs("snap-title").textContent = t("rules.title", { count: items.length });
     const tbody = qs("rules-tbody");
     if (tbody) tbody.innerHTML = renderSenderRulesRowsHtml(items);
     const mcb = qs("rules-master-cb");
@@ -990,17 +1053,17 @@
     if (bulkBtn instanceof HTMLButtonElement) bulkBtn.disabled = state.rulesSelectedKeys.size === 0;
     const bulkSel = qs("rules-bulk-action");
     if (bulkSel instanceof HTMLSelectElement && bulkSel.options.length > 0) {
-      bulkSel.options[0].textContent = `Bulk action on ${state.rulesSelectedKeys.size} selected…`;
+      bulkSel.options[0].textContent = t("rules.bulk_placeholder", { count: state.rulesSelectedKeys.size });
     }
   }
 
   function renderSenderRulesModalBody() {
     const kinds = [
-      { id: "all", label: "All" },
-      { id: "always_keep", label: "Always Keep" },
-      { id: "archive", label: "Always Archive" },
-      { id: "mark_read", label: "Always Mark Read" },
-      { id: "unsubscribed", label: "Unsubscribed" },
+      { id: "all", label: t("rules.all") },
+      { id: "always_keep", label: t("rules.always_keep") },
+      { id: "archive", label: t("rules.always_archive") },
+      { id: "mark_read", label: t("rules.always_mark_read") },
+      { id: "unsubscribed", label: t("rules.unsubscribed") },
     ];
     const filterHtml = kinds
       .map(
@@ -1012,23 +1075,23 @@
     const allSel = items.length > 0 && items.every((r) => state.rulesSelectedKeys.has(r.sender_key));
     const rowsHtml = renderSenderRulesRowsHtml(items);
 
-    qs("snap-title").textContent = `Sender Rules & Memory (${items.length})`;
+    qs("snap-title").textContent = t("rules.title", { count: items.length });
     qs("snap-body").innerHTML = `
       <div class="rules-toolbar">
         <div class="tabs">${filterHtml}</div>
-        <input type="search" id="rules-search-input" class="search-box" value="${escapeHtml(state.rulesSearch)}" placeholder="Search sender or display name…" />
+        <input type="search" id="rules-search-input" class="search-box" value="${escapeHtml(state.rulesSearch)}" placeholder="${escapeHtml(t("rules.search_placeholder"))}" />
       </div>
       <div class="rules-toolbar">
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           <select id="rules-bulk-action" class="pref-select" style="font-size:12px;padding:4px 8px;">
-            <option value="">Bulk action on ${state.rulesSelectedKeys.size} selected…</option>
-            <option value="always_keep">Set Always Keep</option>
-            <option value="archive">Set Always Archive</option>
-            <option value="mark_read">Set Always Mark Read</option>
-            <option value="clear">Clear Learned Rules</option>
-            <option value="delete">Delete Entries Completely</option>
+            <option value="">${escapeHtml(t("rules.bulk_placeholder", { count: state.rulesSelectedKeys.size }))}</option>
+            <option value="always_keep">${escapeHtml(t("rules.bulk_keep"))}</option>
+            <option value="archive">${escapeHtml(t("rules.bulk_archive"))}</option>
+            <option value="mark_read">${escapeHtml(t("rules.bulk_mark_read"))}</option>
+            <option value="clear">${escapeHtml(t("rules.bulk_clear"))}</option>
+            <option value="delete">${escapeHtml(t("rules.bulk_delete"))}</option>
           </select>
-          <button class="btn small secondary" id="btn-rules-bulk-apply" ${state.rulesSelectedKeys.size === 0 ? "disabled" : ""}>Apply Bulk Action</button>
+          <button class="btn small secondary" id="btn-rules-bulk-apply" ${state.rulesSelectedKeys.size === 0 ? "disabled" : ""}>${escapeHtml(t("rules.apply_bulk"))}</button>
         </div>
         <span id="rules-status" class="modal-status"></span>
       </div>
@@ -1037,10 +1100,10 @@
           <thead>
             <tr>
               <th><input type="checkbox" id="rules-master-cb" ${allSel ? "checked" : ""} /></th>
-              <th>Sender</th>
-              <th>Rule / History</th>
-              <th>Last Seen</th>
-              <th>Edit</th>
+              <th>${escapeHtml(t("rules.col_sender"))}</th>
+              <th>${escapeHtml(t("rules.col_history"))}</th>
+              <th>${escapeHtml(t("rules.col_last_seen"))}</th>
+              <th>${escapeHtml(t("rules.col_edit"))}</th>
             </tr>
           </thead>
           <tbody id="rules-tbody">${rowsHtml}</tbody>
@@ -1107,24 +1170,21 @@
                 ? "danger"
                 : "muted";
             const undoneTag = row.undone_at
-              ? ` <span class="pill accent">Restored ${escapeHtml(String(row.undone_at).slice(0, 16).replace("T", " "))}</span>`
+              ? ` <span class="pill accent">${escapeHtml(t("audit.restored_badge", { ts: String(row.undone_at).slice(0, 16).replace("T", " ") }))}</span>`
               : "";
             const undoBtn = row.can_undo_archive
-              ? `<button class="btn small secondary" data-audit-undo="${row.id}">Undo Archive</button>`
+              ? `<button class="btn small secondary" data-audit-undo="${row.id}">${escapeHtml(t("audit.undo_btn"))}</button>`
               : "";
-            const actLabel =
-              ACTION_LABELS[row.action] ||
-              { sweep_archive: "Tray Sweep", undo_archive: "Undo Archive", mark_unsubscribed: "Mark Unsub" }[row.action] ||
-              row.action;
+            const actLabel = actionLabel(row.action);
             return `<tr>
               <td style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">${escapeHtml((row.created_at || "").slice(0, 16).replace("T", " "))}</td>
               <td><span class="acct ${accountToneClass(row.account)}">${escapeHtml(row.account)}</span></td>
               <td><span class="pill ${stCls}">${escapeHtml(st)}</span> <span class="pill muted">${escapeHtml(actLabel)}</span></td>
               <td>
-                <strong>${escapeHtml(row.subject || "(no subject)")}</strong>
+                <strong>${escapeHtml(row.subject || t("row.no_subject"))}</strong>
                 <div class="sub-meta">
                   <span>${escapeHtml(row.sender)}</span>
-                  <span>· Run <code>${escapeHtml((row.run_id || "").slice(0, 14))}</code></span>
+                  <span>· ${tHtml("audit.run_prefix", { id: (row.run_id || "").slice(0, 14) })}</span>
                   <span>· ${escapeHtml(row.detail)}</span>
                   ${undoneTag}
                 </div>
@@ -1133,19 +1193,19 @@
             </tr>`;
           })
           .join("")
-      : `<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:16px;">No audit log entries match the current filters.</td></tr>`;
+      : `<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:16px;">${escapeHtml(t("audit.empty"))}</td></tr>`;
   }
 
   function renderAuditLogRowsOnly() {
     const items = state.auditItems || [];
-    qs("snap-title").textContent = `Audit Log & Batch History (${items.length})`;
+    qs("snap-title").textContent = t("audit.title", { count: items.length });
     const tbody = qs("audit-tbody");
     if (tbody) tbody.innerHTML = renderAuditLogRowsHtml(items);
   }
 
   function renderAuditLogModalBody() {
     const statuses = [
-      { id: "all", label: "All" },
+      { id: "all", label: t("audit.all") },
       { id: "ok", label: "ok" },
       { id: "failed", label: "failed" },
       { id: "blocked_captcha", label: "blocked_captcha" },
@@ -1158,34 +1218,34 @@
       )
       .join("");
     const runOpts = [
-      `<option value="">All Batches (${(state.auditRuns || []).length})</option>`,
+      `<option value="">${escapeHtml(t("audit.all_batches", { count: (state.auditRuns || []).length }))}</option>`,
       ...(state.auditRuns || []).map((r) => {
         const ts = String(r.created_at || "").slice(0, 16).replace("T", " ");
-        const lbl = `${r.run_id} (${ts} · ${r.total} items: ${r.ok} ok, ${r.failed} failed)`;
+        const lbl = t("audit.batch_option", { run_id: r.run_id, ts, total: r.total, ok: r.ok, failed: r.failed });
         const sel = state.auditRunId === r.run_id ? "selected" : "";
         return `<option value="${escapeHtml(r.run_id)}" ${sel}>${escapeHtml(lbl)}</option>`;
       }),
     ].join("");
     const items = state.auditItems || [];
-    qs("snap-title").textContent = `Audit Log & Batch History (${items.length})`;
+    qs("snap-title").textContent = t("audit.title", { count: items.length });
     qs("snap-body").innerHTML = `
       <div class="rules-toolbar">
         <div class="tabs">${statusTabs}</div>
-        <input type="search" id="audit-search-input" class="search-box" value="${escapeHtml(state.auditSearch)}" placeholder="Search sender, subject, or detail…" />
+        <input type="search" id="audit-search-input" class="search-box" value="${escapeHtml(state.auditSearch)}" placeholder="${escapeHtml(t("audit.search_placeholder"))}" />
       </div>
       <div class="rules-toolbar">
         <select id="audit-run-select" class="pref-select" style="font-size:12px;padding:4px 8px;">${runOpts}</select>
-        <span id="audit-status" class="modal-status">Undo Archive safely restores archived emails back to INBOX (0 deletions).</span>
+        <span id="audit-status" class="modal-status">${escapeHtml(t("audit.hint"))}</span>
       </div>
       <div class="tbl-wrap">
         <table class="tbl">
           <thead>
             <tr>
-              <th>Time</th>
-              <th>Acct</th>
-              <th>Outcome &amp; Action</th>
-              <th>Message &amp; Detail</th>
-              <th>Restore</th>
+              <th>${escapeHtml(t("audit.col_time"))}</th>
+              <th>${escapeHtml(t("audit.col_acct"))}</th>
+              <th>${escapeHtml(t("audit.col_outcome"))}</th>
+              <th>${escapeHtml(t("audit.col_detail"))}</th>
+              <th>${escapeHtml(t("audit.col_restore"))}</th>
             </tr>
           </thead>
           <tbody id="audit-tbody">${renderAuditLogRowsHtml(items)}</tbody>
@@ -1201,21 +1261,22 @@
   }
 
   document.addEventListener("click", async (ev) => {
-    const t = ev.target;
-    if (!(t instanceof HTMLElement)) return;
+    const target = ev.target;
+    if (!(target instanceof HTMLElement)) return;
     try {
-      if (t.id === "btn-save-settings") {
+      if (target.id === "btn-save-settings") {
         const statusEl = qs("settings-status");
-        const saveBtn = t instanceof HTMLButtonElement ? t : null;
+        const saveBtn = target instanceof HTMLButtonElement ? target : null;
         if (saveBtn) saveBtn.disabled = true;
         if (statusEl) {
           statusEl.className = "modal-status";
-          statusEl.textContent = "Saving settings…";
+          statusEl.textContent = t("settings.saving");
         }
         try {
           const packs = [...document.querySelectorAll(".cfg-pack-cb:checked")].map((el) => el.value);
           const payload = {
             user: {
+              ui_language: (qs("cfg-ui-language")?.value || "").trim(),
               mark_read_on_archive: Boolean(qs("cfg-mark-read")?.checked),
               max_inbox_messages: Number(qs("cfg-max-inbox")?.value || 500),
               catchup_scan_limit: Number(qs("cfg-catchup-limit")?.value || 200),
@@ -1246,37 +1307,42 @@
             },
           };
           await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+          await loadI18n();
           state.actionsByUid.clear();
           qs("snapshot-modal").classList.add("hidden");
           await loadState(true);
         } catch (saveErr) {
           if (statusEl) {
             statusEl.className = "modal-status err";
-            statusEl.textContent = `Save failed: ${saveErr.message}`;
+            statusEl.textContent = t("settings.save_failed", { message: saveErr.message });
           }
         } finally {
           if (saveBtn) saveBtn.disabled = false;
         }
         return;
       }
-      if (t.dataset.rulesKind) {
-        state.rulesFilter = t.dataset.rulesKind;
+      if (target.dataset.rulesKind) {
+        state.rulesFilter = target.dataset.rulesKind;
         await refreshSenderRulesData();
         return;
       }
-      if (t.dataset.auditStatus) {
-        state.auditStatus = t.dataset.auditStatus;
+      if (target.dataset.auditStatus) {
+        state.auditStatus = target.dataset.auditStatus;
         await refreshAuditLogData();
         return;
       }
-      if (t.dataset.auditUndo) {
-        const undoTriggerBtn = t instanceof HTMLButtonElement ? t : null;
-        const entryId = Number(t.dataset.auditUndo);
+      if (target.dataset.auditUndo) {
+        const undoTriggerBtn = target instanceof HTMLButtonElement ? target : null;
+        const entryId = Number(target.dataset.auditUndo);
         const row = (state.auditItems || []).find((r) => r.id === entryId);
-        qs("modal-title").textContent = "Confirm Undo Archive";
+        qs("modal-title").textContent = t("audit.confirm_title");
         qs("modal-body").innerHTML = row
-          ? `<div class="confirm-warning warn">Move <strong>${escapeHtml(row.subject || "(no subject)")}</strong> from <em>${escapeHtml(row.sender)}</em> back to <strong>${escapeHtml(row.account)}/INBOX</strong>? (Archive-only safeguard preserved; 0 emails deleted.)</div>`
-          : `<div class="confirm-warning warn">Restore archived message back to <strong>INBOX</strong>?</div>`;
+          ? `<div class="confirm-warning warn">${tHtml("audit.confirm_body", {
+              subject: row.subject || t("row.no_subject"),
+              sender: row.sender,
+              account: row.account,
+            })}</div>`
+          : `<div class="confirm-warning warn">${t("audit.confirm_body_generic")}</div>`;
         qs("modal-confirm").disabled = false;
         qs("confirm-modal").classList.remove("hidden");
         state.confirmCallback = async () => {
@@ -1290,7 +1356,7 @@
             if (undoTriggerBtn) undoTriggerBtn.disabled = false;
             if (statusEl) {
               statusEl.className = "modal-status err";
-              statusEl.textContent = `Undo failed: ${undoErr.message}`;
+              statusEl.textContent = t("audit.undo_failed", { message: undoErr.message });
             } else {
               showError(undoErr.message);
             }
@@ -1307,7 +1373,7 @@
           const nextEl = qs("audit-status");
           if (nextEl) {
             nextEl.className = "modal-status ok";
-            nextEl.textContent = `Restored to ${resp.restored_to || "INBOX"}.`;
+            nextEl.textContent = t("audit.restored_ok", { dest: resp.restored_to || "INBOX" });
           }
           try {
             await loadState(false);
@@ -1317,7 +1383,7 @@
         };
         return;
       }
-      if (t.id === "btn-rules-bulk-apply") {
+      if (target.id === "btn-rules-bulk-apply") {
         const actionEl = qs("rules-bulk-action");
         const act = actionEl instanceof HTMLSelectElement ? actionEl.value : "";
         const keys = [...state.rulesSelectedKeys];
@@ -1328,12 +1394,12 @@
           const nextStatus = qs("rules-status");
           if (nextStatus) {
             nextStatus.className = "modal-status ok";
-            nextStatus.textContent = `Updated ${keys.length} sender(s).`;
+            nextStatus.textContent = t("rules.updated_bulk", { count: keys.length });
           }
         };
         if (act === "delete") {
-          qs("modal-title").textContent = `Delete ${keys.length} Sender Memory Entries`;
-          qs("modal-body").innerHTML = `<div class="confirm-warning warn">Remove <strong>${keys.length}</strong> sender record(s) from SQLite <code>sender_memory</code>? Learned rules and unsubscribe cooldown history for these senders will be reset.</div>`;
+          qs("modal-title").textContent = t("rules.confirm_delete_title", { count: keys.length });
+          qs("modal-body").innerHTML = `<div class="confirm-warning warn">${tHtml("rules.confirm_delete_body", { count: keys.length })}</div>`;
           qs("modal-confirm").disabled = false;
           qs("confirm-modal").classList.remove("hidden");
           state.confirmCallback = async () => {
@@ -1362,7 +1428,7 @@
         }
         return;
       }
-      if (t.id === "btn-reset-filters") {
+      if (target.id === "btn-reset-filters") {
         state.category = "all";
         state.account = "all";
         state.unreadOnly = false;
@@ -1372,13 +1438,13 @@
         render();
         return;
       }
-      if (t.dataset.retryScan) {
+      if (target.dataset.retryScan) {
         await loadState(true);
         return;
       }
-      if (t.dataset.trayDismissUid) {
-        const uid = t.dataset.trayDismissUid;
-        if (t instanceof HTMLButtonElement) t.disabled = true;
+      if (target.dataset.trayDismissUid) {
+        const uid = target.dataset.trayDismissUid;
+        if (target instanceof HTMLButtonElement) target.disabled = true;
         qs("modal-confirm").disabled = true;
         state.confirmCallback = null;
         try {
@@ -1393,85 +1459,85 @@
             qs("confirm-modal").classList.add("hidden");
           }
         } finally {
-          if (t instanceof HTMLButtonElement) t.disabled = false;
+          if (target instanceof HTMLButtonElement) target.disabled = false;
           qs("modal-confirm").disabled = false;
         }
         return;
       }
-      if (t.dataset.openUrl && isSafeHttpUrl(t.dataset.openUrl)) {
-        window.open(t.dataset.openUrl, "_blank", "noopener,noreferrer");
+      if (target.dataset.openUrl && isSafeHttpUrl(target.dataset.openUrl)) {
+        window.open(target.dataset.openUrl, "_blank", "noopener,noreferrer");
         return;
       }
-      if (t.dataset.cat) {
-        state.category = t.dataset.cat;
+      if (target.dataset.cat) {
+        state.category = target.dataset.cat;
         render();
         return;
       }
-      if (t.dataset.acct) {
-        state.account = t.dataset.acct;
+      if (target.dataset.acct) {
+        state.account = target.dataset.acct;
         render();
         return;
       }
-      if (t.dataset.mode) {
-        state.mode = t.dataset.mode;
+      if (target.dataset.mode) {
+        state.mode = target.dataset.mode;
         state.category = "all";
         await loadState(false);
         return;
       }
-      if (t.dataset.uid && t.dataset.act) {
-        state.actionsByUid.set(t.dataset.uid, t.dataset.act);
+      if (target.dataset.uid && target.dataset.act) {
+        state.actionsByUid.set(target.dataset.uid, target.dataset.act);
         render();
         return;
       }
-      if (t.dataset.enqueueMissed) {
+      if (target.dataset.enqueueMissed) {
         await api("/api/missed/enqueue", {
           method: "POST",
-          body: JSON.stringify({ uid: t.dataset.enqueueMissed }),
+          body: JSON.stringify({ uid: target.dataset.enqueueMissed }),
         });
         await loadState(false);
         return;
       }
-      if (t.dataset.proofIdx !== undefined) {
-        showProofModal(Number(t.dataset.proofIdx));
+      if (target.dataset.proofIdx !== undefined) {
+        showProofModal(Number(target.dataset.proofIdx));
         return;
       }
-      if (t.dataset.missedInspect) {
-        showMissedSnapshot(Number(t.dataset.missedInspect));
+      if (target.dataset.missedInspect) {
+        showMissedSnapshot(Number(target.dataset.missedInspect));
         return;
       }
-      if (t.dataset.missedCopyReport) {
-        const mid = Number(t.dataset.missedCopyReport);
+      if (target.dataset.missedCopyReport) {
+        const mid = Number(target.dataset.missedCopyReport);
         const statusEl = qs("missed-copy-status");
         const prevEl = qs("missed-redacted-preview");
         let rep;
         try {
           rep = await api(`/api/missed/${mid}/export`);
         } catch (copyErr) {
-          if (statusEl) statusEl.textContent = `Export failed: ${copyErr.message}`;
+          if (statusEl) statusEl.textContent = t("missed_snap.export_failed", { message: copyErr.message });
           return;
         }
         if (prevEl) {
           prevEl.classList.remove("hidden");
-          prevEl.innerHTML = `<strong>Privacy-Redacted Report (review before posting):</strong><pre style="margin-top:6px;">${escapeHtml(rep.markdown)}</pre>`;
+          prevEl.innerHTML = `<strong>${escapeHtml(t("missed_snap.preview_title"))}</strong><pre style="margin-top:6px;">${escapeHtml(rep.markdown)}</pre>`;
         }
         try {
           if (navigator.clipboard && navigator.clipboard.writeText) {
             await navigator.clipboard.writeText(rep.markdown);
-            if (statusEl) statusEl.textContent = "Copied redacted report to clipboard!";
+            if (statusEl) statusEl.textContent = t("missed_snap.copied");
           } else if (statusEl) {
-            statusEl.textContent = "Clipboard unavailable. Copy from the redacted preview below.";
+            statusEl.textContent = t("missed_snap.clip_unavailable");
           }
         } catch (_clipErr) {
-          if (statusEl) statusEl.textContent = "Clipboard permission denied. Copy from the redacted preview below.";
+          if (statusEl) statusEl.textContent = t("missed_snap.clip_denied");
         }
         return;
       }
-      if (t.dataset.missedOpen && isSafeHttpUrl(t.dataset.missedOpen)) {
-        window.open(t.dataset.missedOpen, "_blank", "noopener,noreferrer");
+      if (target.dataset.missedOpen && isSafeHttpUrl(target.dataset.missedOpen)) {
+        window.open(target.dataset.missedOpen, "_blank", "noopener,noreferrer");
         return;
       }
-      if (t.dataset.markUnsubIdx !== undefined) {
-        const idx = Number(t.dataset.markUnsubIdx);
+      if (target.dataset.markUnsubIdx !== undefined) {
+        const idx = Number(target.dataset.markUnsubIdx);
         const r = state.lastJobResults[idx];
         if (!r) return;
         const resp = await api("/api/unsub/mark-succeeded", {
@@ -1487,15 +1553,15 @@
         });
         r.status = "ok";
         r.detail = resp.archived
-          ? "Marked unsubscribed & archived by user"
-          : "Marked unsubscribed by user";
+          ? t("results.marked_unsub_archived")
+          : t("results.marked_unsub");
         qs("snapshot-modal").classList.add("hidden");
         renderJobResults(state.lastJobResults);
         await loadState(false);
         return;
       }
-      if (t.dataset.missedMarkUnsub) {
-        const mid = Number(t.dataset.missedMarkUnsub);
+      if (target.dataset.missedMarkUnsub) {
+        const mid = Number(target.dataset.missedMarkUnsub);
         const resp = await api("/api/unsub/mark-succeeded", {
           method: "POST",
           body: JSON.stringify({ missed_id: mid, archive: true }),
@@ -1503,33 +1569,33 @@
         qs("snapshot-modal").classList.add("hidden");
         renderJobResults([
           {
-            sender: `Missed #${mid}`,
+            sender: t("results.missed_label", { id: mid }),
             action: "archive_and_unsub",
             status: "ok",
             detail: resp.archived
-              ? "Marked as unsubscribed & archived from Inbox"
-              : "Marked as unsubscribed",
+              ? t("results.marked_unsub_archived")
+              : t("results.marked_unsub"),
           },
         ]);
         await loadState(false);
         return;
       }
-      if (t.dataset.missedResolve) {
-        await api(`/api/missed/${Number(t.dataset.missedResolve)}/resolve`, {
+      if (target.dataset.missedResolve) {
+        await api(`/api/missed/${Number(target.dataset.missedResolve)}/resolve`, {
           method: "POST",
           body: JSON.stringify({ note: "Resolved from UI" }),
         });
         await loadState(false);
         return;
       }
-      if (t.dataset.missedRetry) {
-        const res = await api(`/api/missed/${Number(t.dataset.missedRetry)}/retry`, {
+      if (target.dataset.missedRetry) {
+        const res = await api(`/api/missed/${Number(target.dataset.missedRetry)}/retry`, {
           method: "POST",
           body: JSON.stringify({ headless: !qs("show-browser-toggle").checked }),
         });
         renderJobResults([
           {
-            sender: `Missed #${t.dataset.missedRetry}`,
+            sender: t("results.missed_label", { id: target.dataset.missedRetry }),
             status: res.outcome.status === "success" ? "ok" : res.outcome.status,
             detail: res.outcome.detail,
             opened_target: res.outcome.final_url,
@@ -1544,40 +1610,40 @@
   });
 
   document.addEventListener("change", async (ev) => {
-    const t = ev.target;
-    if (!(t instanceof HTMLElement)) return;
+    const target = ev.target;
+    if (!(target instanceof HTMLElement)) return;
     try {
-      if (t.id === "master-cb" && t instanceof HTMLInputElement) {
+      if (target.id === "master-cb" && target instanceof HTMLInputElement) {
         for (const item of filteredItems()) {
-          if (t.checked) state.selectedUids.add(item.uid);
+          if (target.checked) state.selectedUids.add(item.uid);
           else state.selectedUids.delete(item.uid);
         }
         render();
         return;
       }
-      if (t.classList.contains("row-cb") && t instanceof HTMLInputElement && t.dataset.uid) {
-        if (t.checked) state.selectedUids.add(t.dataset.uid);
-        else state.selectedUids.delete(t.dataset.uid);
+      if (target.classList.contains("row-cb") && target instanceof HTMLInputElement && target.dataset.uid) {
+        if (target.checked) state.selectedUids.add(target.dataset.uid);
+        else state.selectedUids.delete(target.dataset.uid);
         render();
         return;
       }
-      if (t.id === "unread-only-toggle" && t instanceof HTMLInputElement) {
-        state.unreadOnly = t.checked;
+      if (target.id === "unread-only-toggle" && target instanceof HTMLInputElement) {
+        state.unreadOnly = target.checked;
         render();
         return;
       }
-      if (t.classList.contains("pref-select") && t instanceof HTMLSelectElement && t.value) {
-        const targetEmail = (t.dataset.prefEmail || "").toLowerCase();
+      if (target.classList.contains("pref-select") && target instanceof HTMLSelectElement && target.value) {
+        const targetEmail = (target.dataset.prefEmail || "").toLowerCase();
         await api("/api/preferences", {
           method: "POST",
           body: JSON.stringify({
-            sender_email: t.dataset.prefEmail || "",
-            sender_domain: t.dataset.prefDom || "",
-            display_name: t.dataset.prefName || "",
-            preference: t.value,
+            sender_email: target.dataset.prefEmail || "",
+            sender_domain: target.dataset.prefDom || "",
+            display_name: target.dataset.prefName || "",
+            preference: target.value,
           }),
         });
-        t.value = "";
+        target.value = "";
         // Clear cached row actions for this sender so the updated default takes effect immediately
         for (const item of state.data?.items || []) {
           if (item.header.sender_email.toLowerCase() === targetEmail) {
@@ -1587,34 +1653,34 @@
         await loadState(false);
         return;
       }
-      if (t.id === "rules-master-cb" && t instanceof HTMLInputElement) {
+      if (target.id === "rules-master-cb" && target instanceof HTMLInputElement) {
         for (const row of state.rulesItems || []) {
-          if (t.checked) state.rulesSelectedKeys.add(row.sender_key);
+          if (target.checked) state.rulesSelectedKeys.add(row.sender_key);
           else state.rulesSelectedKeys.delete(row.sender_key);
         }
         renderSenderRulesRowsOnly();
         return;
       }
-      if (t.classList.contains("rules-row-cb") && t instanceof HTMLInputElement && t.dataset.senderKey) {
-        if (t.checked) state.rulesSelectedKeys.add(t.dataset.senderKey);
-        else state.rulesSelectedKeys.delete(t.dataset.senderKey);
+      if (target.classList.contains("rules-row-cb") && target instanceof HTMLInputElement && target.dataset.senderKey) {
+        if (target.checked) state.rulesSelectedKeys.add(target.dataset.senderKey);
+        else state.rulesSelectedKeys.delete(target.dataset.senderKey);
         renderSenderRulesRowsOnly();
         return;
       }
-      if (t.classList.contains("rule-edit-select") && t instanceof HTMLSelectElement && t.value && t.dataset.ruleKey) {
-        const key = t.dataset.ruleKey;
-        const act = t.value;
-        t.value = "";
+      if (target.classList.contains("rule-edit-select") && target instanceof HTMLSelectElement && target.value && target.dataset.ruleKey) {
+        const key = target.dataset.ruleKey;
+        const act = target.value;
+        target.value = "";
         await applySenderMemoryUpdate([key], act);
         const nextStatus = qs("rules-status");
         if (nextStatus) {
           nextStatus.className = "modal-status ok";
-          nextStatus.textContent = `Updated ${key}.`;
+          nextStatus.textContent = t("rules.updated_one", { key });
         }
         return;
       }
-      if (t.id === "audit-run-select" && t instanceof HTMLSelectElement) {
-        state.auditRunId = t.value;
+      if (target.id === "audit-run-select" && target instanceof HTMLSelectElement) {
+        state.auditRunId = target.value;
         await refreshAuditLogData({ rowsOnly: true });
         return;
       }
@@ -1624,9 +1690,9 @@
   });
 
   document.addEventListener("input", async (ev) => {
-    const t = ev.target;
-    if (t instanceof HTMLInputElement && t.id === "rules-search-input") {
-      state.rulesSearch = t.value;
+    const target = ev.target;
+    if (target instanceof HTMLInputElement && target.id === "rules-search-input") {
+      state.rulesSearch = target.value;
       try {
         await refreshSenderRulesData({ rowsOnly: true });
       } catch (err) {
@@ -1634,8 +1700,8 @@
       }
       return;
     }
-    if (t instanceof HTMLInputElement && t.id === "audit-search-input") {
-      state.auditSearch = t.value;
+    if (target instanceof HTMLInputElement && target.id === "audit-search-input") {
+      state.auditSearch = target.value;
       try {
         await refreshAuditLogData({ rowsOnly: true });
       } catch (err) {
@@ -1661,24 +1727,26 @@
   });
   qs("btn-exec-selected").addEventListener("click", () => {
     const items = (state.data?.items || []).filter((i) => state.selectedUids.has(i.uid));
-    openConfirmation("Confirm Selected Actions", nonNoopPairs(items)).catch((e) => showError(e.message));
+    openConfirmation(t("confirm.title_selected"), nonNoopPairs(items)).catch((e) => showError(e.message));
   });
   qs("btn-exec-category").addEventListener("click", () => {
-    const catLabel = CATEGORIES.find((c) => c.id === state.category)?.label || "Category";
-    openConfirmation(`Confirm ${catLabel} Actions`, nonNoopPairs(filteredItems())).catch((e) => showError(e.message));
+    const catLabel = CATEGORY_IDS.includes(state.category)
+      ? categoryLabel(state.category)
+      : t("cat.category_fallback");
+    openConfirmation(t("confirm.title_category", { category: catLabel }), nonNoopPairs(filteredItems())).catch((e) => showError(e.message));
   });
   qs("btn-exec-all").addEventListener("click", () => {
-    openConfirmation("Confirm All Queued Actions", nonNoopPairs(state.data?.items || [])).catch((e) => showError(e.message));
+    openConfirmation(t("confirm.title_all"), nonNoopPairs(state.data?.items || [])).catch((e) => showError(e.message));
   });
   qs("btn-tray-sweep").addEventListener("click", () => openTrayConfirmation().catch((e) => showError(e.message)));
   qs("btn-tray-dismiss").addEventListener("click", () => {
     const tray = state.data?.tray || [];
     if (!tray.length) return;
-    const uids = tray.map((t) => t.message_uid);
-    qs("modal-title").textContent = `Confirm Dismiss Safety Tray (${tray.length} items)`;
+    const uids = tray.map((item) => item.message_uid);
+    qs("modal-title").textContent = t("confirm.tray_dismiss_title", { count: tray.length });
     qs("modal-body").innerHTML = `
       <div class="confirm-warning warn">
-        Dismissing the Safety Tray clears <strong>${tray.length}</strong> opened item(s) from this reminder tray only. Your emails will remain untouched in Mail.app Inbox.
+        ${tHtml("confirm.tray_dismiss_body", { count: tray.length })}
       </div>
     `;
     qs("modal-confirm").disabled = false;
@@ -1700,7 +1768,14 @@
   });
   qs("snap-close").addEventListener("click", () => qs("snapshot-modal").classList.add("hidden"));
 
-  loadState(false).catch((err) => {
+  (async () => {
+    try {
+      await loadI18n();
+    } catch (_i18nErr) {
+      // Fall back to static English DOM strings if locale fetch fails
+    }
+    await loadState(false);
+  })().catch((err) => {
     showError(err.message);
   });
 })();
