@@ -286,6 +286,7 @@ h1 { font-size: 16px; font-weight: 700; margin-bottom: 5px; }
   padding: 20px;
   z-index: 50;
 }
+#confirm-modal { z-index: 60; }
 .modal {
   width: 100%;
   max-width: 680px;
@@ -391,4 +392,55 @@ h1 { font-size: 16px; font-weight: 700; margin-bottom: 5px; }
 .guide-list li {
   margin-left: 18px;
   line-height: 1.45;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.settings-field input,
+.settings-field select,
+.settings-field textarea {
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: inherit;
+}
+.settings-field textarea {
+  min-height: 62px;
+  resize: vertical;
+}
+.settings-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.modal-status {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.modal-status.ok { color: var(--success); }
+.modal-status.err { color: var(--danger); }
+.rules-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }

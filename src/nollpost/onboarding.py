@@ -8,13 +8,16 @@ import sys
 import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from nollpost.config import (
     DEFAULT_CONFIG_TOML,
-    TriageConfig,
     VALID_GMAIL_ARCHIVE_STRATEGIES,
+    TriageConfig,
     _deep_merge,
+    render_config_toml,
+    toml_str,
+    toml_str_list,
 )
 from nollpost.mail_bridge import (
     AppleMailBridge,
@@ -207,90 +210,9 @@ def format_doctor_report(checks: list[DoctorCheck]) -> str:
     return "\n".join(lines)
 
 
-def _toml_str(value: str) -> str:
-    out: list[str] = ['"']
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-    for ch in normalized:
-        code = ord(ch)
-        if ch == "\\":
-            out.append("\\\\")
-        elif ch == '"':
-            out.append('\\"')
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\t":
-            out.append("\\t")
-        elif code < 32 or code == 127:
-            out.append(f"\\u{code:04x}")
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
-
-
-def _toml_str_list(values: list[str]) -> str:
-    if not values:
-        return "[]"
-    items = ", ".join(_toml_str(v) for v in values)
-    return f"[{items}]"
-
-
-def _render_config_toml(data: dict[str, Any]) -> str:
-    user = data["user"]
-    accounts = data["accounts"]
-    archive_map = accounts.get("archive_map", {})
-    rules = data["rules"]
-    browser = data["browser"]
-    consulting = data["consulting"]
-    profile = data["profile"]
-
-    lines = [
-        "# nollpost configuration",
-        "",
-        "[user]",
-        f"display_name = {_toml_str(str(user.get('display_name', '')))}",
-        f"mark_read_on_archive = {'true' if user.get('mark_read_on_archive', True) else 'false'}",
-        f"max_inbox_messages = {int(user.get('max_inbox_messages', 500))}",
-        f"catchup_scan_limit = {int(user.get('catchup_scan_limit', 200))}",
-        f"catchup_days_back = {int(user.get('catchup_days_back', 14))}",
-        "",
-        "[accounts]",
-        f"gmail_archive_strategy = {_toml_str(str(accounts.get('gmail_archive_strategy', 'ui_menu')))}",
-        "",
-        "[accounts.archive_map]",
-    ]
-    for acct_name, box_name in archive_map.items():
-        lines.append(f"{_toml_str(str(acct_name))} = {_toml_str(str(box_name))}")
-
-    lines.extend(
-        [
-            "",
-            "[rules]",
-            f"enabled_packs = {_toml_str_list([str(x) for x in rules.get('enabled_packs', [])])}",
-            "",
-            "[browser]",
-            f"locale = {_toml_str(str(browser.get('locale', '')))}",
-            f"accept_language = {_toml_str(str(browser.get('accept_language', '')))}",
-            "",
-            "[consulting]",
-            f"enabled = {'true' if consulting.get('enabled', False) else 'false'}",
-            f"networks = {_toml_str_list([str(x) for x in consulting.get('networks', [])])}",
-            f"match_keywords = {_toml_str_list([str(x) for x in consulting.get('match_keywords', [])])}",
-            f"negative_keywords = {_toml_str_list([str(x) for x in consulting.get('negative_keywords', [])])}",
-            f"decline_boilerplate = {_toml_str(str(consulting.get('decline_boilerplate', '')))}",
-            "",
-            "[profile]",
-            f"wanted_domains = {_toml_str_list([str(x) for x in profile.get('wanted_domains', [])])}",
-            f"bot_senders = {_toml_str_list([str(x) for x in profile.get('bot_senders', [])])}",
-            f"transactional_domains = {_toml_str_list([str(x) for x in profile.get('transactional_domains', [])])}",
-            f"bill_keywords = {_toml_str_list([str(x) for x in profile.get('bill_keywords', [])])}",
-            "",
-        ]
-    )
-    rendered = "\n".join(lines)
-    # Verify round-trip parse before touching disk
-    tomllib.loads(rendered)
-    return rendered
+_toml_str = toml_str
+_toml_str_list = toml_str_list
+_render_config_toml = render_config_toml
 
 
 def _install_chromium() -> int:
