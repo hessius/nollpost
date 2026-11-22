@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import re
 import secrets
 import subprocess
@@ -32,6 +33,99 @@ from nollpost.scanner import ScanSnapshot, run_scan
 from nollpost.store import TriageStore
 
 STATIC_DIR = Path(__file__).parent / "static"
+LOCALES_DIR = STATIC_DIR / "locales"
+
+
+def _read_locale_file(code: str, locales_dir: Path = LOCALES_DIR) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,4})?", code or "", re.IGNORECASE):
+        return {}
+    path = locales_dir / f"{code}.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def list_available_ui_locales(locales_dir: Path = LOCALES_DIR) -> list[dict[str, str]]:
+    """Return sorted UI locale metadata dicts ({code, name}) shipped in LOCALES_DIR."""
+    if not locales_dir.is_dir():
+        return []
+    items: list[dict[str, str]] = []
+    for path in sorted(locales_dir.glob("*.json")):
+        if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,4})?", path.stem, re.IGNORECASE):
+            continue
+        raw = _read_locale_file(path.stem, locales_dir)
+        meta = raw.get("_meta") if isinstance(raw.get("_meta"), dict) else {}
+        code = str(meta.get("code") or path.stem).strip().lower()
+        name = str(meta.get("name") or code).strip()
+        items.append({"code": code, "name": name})
+    items.sort(key=lambda it: (0 if it["code"] == "en" else 1, it["code"]))
+    return items
+
+
+def _match_locale_tag(tag: str, available_codes: set[str]) -> Optional[str]:
+    norm = str(tag or "").strip().lower().replace("_", "-")
+    if not norm or norm == "*":
+        return None
+    if norm in available_codes:
+        return norm
+    primary = norm.split("-", 1)[0]
+    if primary in available_codes:
+        return primary
+    return None
+
+
+def resolve_ui_language(
+    configured_lang: str = "",
+    accept_language: str = "",
+    available_codes: Optional[set[str]] = None,
+) -> str:
+    """Resolve UI locale from explicit config, then Accept-Language header, else 'en'."""
+    codes = set(available_codes) if available_codes is not None else {x["code"] for x in list_available_ui_locales()}
+    fallback = "en" if "en" in codes else (sorted(codes)[0] if codes else "en")
+    if configured_lang:
+        return _match_locale_tag(configured_lang, codes) or fallback
+
+    weighted: list[tuple[float, int, str]] = []
+    for idx, part in enumerate(str(accept_language or "").split(",")):
+        piece = part.strip()
+        if not piece:
+            continue
+        segments = [s.strip() for s in piece.split(";")]
+        tag = segments[0]
+        q = 1.0
+        for param in segments[1:]:
+            if param.lower().startswith("q="):
+                try:
+                    q = float(param[2:])
+                except ValueError:
+                    q = 0.0
+        if q <= 0:
+            continue
+        weighted.append((-q, idx, tag))
+    weighted.sort()
+    for _, _, tag in weighted:
+        matched = _match_locale_tag(tag, codes)
+        if matched:
+            return matched
+    return fallback
+
+
+def load_ui_locale_messages(language: str, locales_dir: Path = LOCALES_DIR) -> dict[str, str]:
+    """Load locale strings for `language`, layered onto 'en' as fallback."""
+    merged: dict[str, str] = {}
+    for code in ("en", language):
+        if not code:
+            continue
+        raw = _read_locale_file(code, locales_dir)
+        for k, v in raw.items():
+            if k == "_meta" or not isinstance(v, str):
+                continue
+            merged[k] = v
+    return merged
 
 
 class ActionSelection(BaseModel):
@@ -283,6 +377,24 @@ def create_app(
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(html)
 
+    @app.get("/api/i18n")
+    async def api_i18n(request: Request, lang: Optional[str] = None) -> dict[str, Any]:
+        available = list_available_ui_locales()
+        codes = {entry["code"] for entry in available}
+        chosen_override = lang.strip() if lang is not None else runtime.config.ui_language
+        resolved = resolve_ui_language(
+            configured_lang=chosen_override,
+            accept_language=request.headers.get("accept-language", ""),
+            available_codes=codes,
+        )
+        return {
+            "language": resolved,
+            "configured": runtime.config.ui_language,
+            "fallback": "en",
+            "available": available,
+            "messages": load_ui_locale_messages(resolved),
+        }
+
     @app.get("/api/state")
     async def api_state(mode: str = "inbox", refresh: bool = False) -> dict[str, Any]:
         snap = await runtime.get_snapshot(mode=mode, refresh=refresh, bypass_cache=refresh)
@@ -338,6 +450,8 @@ def create_app(
             "config_path": str(cfg.config_path),
             "user": {
                 "display_name": cfg.display_name,
+                "ui_language": cfg.ui_language,
+                "available_ui_languages": list_available_ui_locales(),
                 "mark_read_on_archive": cfg.mark_read_on_archive,
                 "max_inbox_messages": cfg.max_inbox_messages,
                 "catchup_scan_limit": cfg.catchup_scan_limit,

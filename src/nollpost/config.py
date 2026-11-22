@@ -14,12 +14,29 @@ from nollpost.packs import resolve_packs
 
 _BCP47_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4}|-[0-9]{3})?$")
 
+
+def _normalize_ui_language(raw: str, *, strict: bool = False) -> str:
+    """Normalize a UI language preference ('', 'auto', 'en', 'sv', or BCP-47 tag)."""
+    lang = str(raw or "").strip()
+    if lang.lower() in ("", "auto"):
+        return ""
+    if not _BCP47_LOCALE_RE.fullmatch(lang):
+        if strict:
+            raise ValueError(f"Invalid ui_language {lang!r}; expected 'auto', '', 'en', 'sv', or a BCP-47 tag")
+        return ""
+    if "-" in lang:
+        primary, region = lang.split("-", 1)
+        return f"{primary.lower()}-{region}"
+    return lang.lower()
+
 VALID_GMAIL_ARCHIVE_STRATEGIES = ("ui_menu", "tag_staging", "two_hop")
 
 DEFAULT_CONFIG_TOML = """# nollpost configuration
 
 [user]
 display_name = ""
+# Review Board UI language: "" (auto from browser/OS), "en", or "sv"
+ui_language = ""
 mark_read_on_archive = true
 max_inbox_messages = 500
 catchup_scan_limit = 200
@@ -97,6 +114,7 @@ class TriageConfig:
     invoices_dir: Path
     screenshots_dir: Path
     display_name: str = ""
+    ui_language: str = ""
     mark_read_on_archive: bool = True
     max_inbox_messages: int = 500
     catchup_scan_limit: int = 200
@@ -281,6 +299,8 @@ def load_config(
     else:
         consulting_enabled = bool(consult_sec.get("enabled", False))
 
+    ui_language = _normalize_ui_language(str(user_sec.get("ui_language", "")), strict=False)
+
     return TriageConfig(
         config_path=resolved_config_path,
         data_dir=data_dir,
@@ -289,6 +309,7 @@ def load_config(
         invoices_dir=invoices_dir,
         screenshots_dir=screenshots_dir,
         display_name=str(user_sec["display_name"]),
+        ui_language=ui_language,
         mark_read_on_archive=bool(user_sec["mark_read_on_archive"]),
         max_inbox_messages=int(user_sec["max_inbox_messages"]),
         catchup_scan_limit=int(user_sec["catchup_scan_limit"]),
@@ -356,6 +377,7 @@ def render_config_toml(data: dict[str, Any]) -> str:
         "",
         "[user]",
         f"display_name = {toml_str(str(user.get('display_name', '')))}",
+        f"ui_language = {toml_str(str(user.get('ui_language', '')))}",
         f"mark_read_on_archive = {'true' if user.get('mark_read_on_archive', True) else 'false'}",
         f"max_inbox_messages = {int(user.get('max_inbox_messages', 500))}",
         f"catchup_scan_limit = {int(user.get('catchup_scan_limit', 200))}",
@@ -455,6 +477,8 @@ def update_config_file(
         u = updates["user"]
         if "display_name" in u:
             merged["user"]["display_name"] = str(u["display_name"]).strip()
+        if "ui_language" in u:
+            merged["user"]["ui_language"] = _normalize_ui_language(str(u["ui_language"]), strict=True)
         if "mark_read_on_archive" in u:
             merged["user"]["mark_read_on_archive"] = bool(u["mark_read_on_archive"])
         if "max_inbox_messages" in u:
