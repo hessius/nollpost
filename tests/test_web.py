@@ -479,6 +479,14 @@ def test_scan_progress_and_ui_safety_controls(tmp_path: Path, monkeypatch):
         assert [t["message_uid"] for t in remaining] == ["iCloud:INBOX:11"]
 
         html = client.get(f"/?key={token}").text
+        favicon_resp = client.get("/static/favicon.svg")
+        assert favicon_resp.status_code == 200
+        assert "Snabel-noll" in favicon_resp.text
+        assert 'id="outer-swirl"' in favicon_resp.text
+        assert 'id="inner-zero"' in favicon_resp.text
+        assert 'id="zero-slash"' in favicon_resp.text
+        assert 'href="/static/favicon.svg"' in html
+        assert 'class="brand-mark"' in html
         app_js = client.get("/static/app.js").text
         en_locale = client.get("/static/locales/en.json").text
         assert 'id="help-btn"' in html

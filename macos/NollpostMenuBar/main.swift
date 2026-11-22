@@ -90,15 +90,63 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         try? logHandle?.close()
     }
 
+    private nonisolated static func makeSnabelNollMenuIcon() -> NSImage {
+        let img = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { rect in
+            let scale: CGFloat = (rect.height - 2.0) / 400.0
+            let tx = rect.midX - 256.0 * scale
+            let ty = rect.midY - 256.0 * scale
+            var xform = AffineTransform(translationByX: tx, byY: ty)
+            xform.scale(scale)
+
+            NSColor.black.setStroke()
+
+            let swirl = NSBezierPath()
+            swirl.move(to: NSPoint(x: 343.7, y: 410.3))
+            swirl.curve(to: NSPoint(x: 261.0, y: 438.0), controlPoint1: NSPoint(x: 318.9, y: 428.4), controlPoint2: NSPoint(x: 290.2, y: 438.0))
+            swirl.curve(to: NSPoint(x: 105.0, y: 256.0), controlPoint1: NSPoint(x: 173.6, y: 438.0), controlPoint2: NSPoint(x: 105.0, y: 357.9))
+            swirl.curve(to: NSPoint(x: 259.0, y: 74.0), controlPoint1: NSPoint(x: 105.0, y: 154.1), controlPoint2: NSPoint(x: 172.8, y: 74.0))
+            swirl.curve(to: NSPoint(x: 407.0, y: 244.0), controlPoint1: NSPoint(x: 341.9, y: 74.0), controlPoint2: NSPoint(x: 407.0, y: 148.8))
+            swirl.curve(to: NSPoint(x: 361.0, y: 352.0), controlPoint1: NSPoint(x: 407.0, y: 312.0), controlPoint2: NSPoint(x: 391.0, y: 352.0))
+            swirl.curve(to: NSPoint(x: 319.0, y: 256.0), controlPoint1: NSPoint(x: 331.0, y: 352.0), controlPoint2: NSPoint(x: 319.0, y: 322.0))
+            swirl.transform(using: xform)
+            swirl.lineWidth = 36.0 * scale
+            swirl.lineCapStyle = .butt
+            swirl.lineJoinStyle = .round
+            swirl.stroke()
+
+            let innerZero = NSBezierPath()
+            innerZero.move(to: NSPoint(x: 255.0, y: 160.0))
+            innerZero.curve(to: NSPoint(x: 319.0, y: 256.0), controlPoint1: NSPoint(x: 292.1, y: 160.0), controlPoint2: NSPoint(x: 319.0, y: 197.4))
+            innerZero.curve(to: NSPoint(x: 255.0, y: 352.0), controlPoint1: NSPoint(x: 319.0, y: 314.6), controlPoint2: NSPoint(x: 292.1, y: 352.0))
+            innerZero.curve(to: NSPoint(x: 191.0, y: 256.0), controlPoint1: NSPoint(x: 217.9, y: 352.0), controlPoint2: NSPoint(x: 191.0, y: 314.6))
+            innerZero.curve(to: NSPoint(x: 255.0, y: 160.0), controlPoint1: NSPoint(x: 191.0, y: 197.4), controlPoint2: NSPoint(x: 217.9, y: 160.0))
+            innerZero.close()
+            innerZero.transform(using: xform)
+            innerZero.lineWidth = 36.0 * scale
+            innerZero.lineCapStyle = .butt
+            innerZero.lineJoinStyle = .round
+            innerZero.stroke()
+
+            let slash = NSBezierPath()
+            slash.move(to: NSPoint(x: 298.1, y: 182.2))
+            slash.line(to: NSPoint(x: 211.9, y: 329.8))
+            slash.transform(using: xform)
+            slash.lineWidth = 26.0 * scale
+            slash.lineCapStyle = .butt
+            slash.stroke()
+
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
     private func buildStatusMenu() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            if let sym = NSImage(systemSymbolName: "envelope.badge", accessibilityDescription: "Nollpost") {
-                sym.isTemplate = true
-                button.image = sym
-            } else {
-                button.title = "Nollpost"
-            }
+            let icon = Self.makeSnabelNollMenuIcon()
+            icon.accessibilityDescription = "Nollpost"
+            button.image = icon
             button.toolTip = "Nollpost Morning Mail Triage"
         }
 
