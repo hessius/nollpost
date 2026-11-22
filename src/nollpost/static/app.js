@@ -58,10 +58,41 @@
     return /^https?:\/\//i.test(String(url || "").trim());
   }
 
+  function isMailPermissionError(msg) {
+    return /-1743|not authori[sz]ed|osascript|applescript|privilege|automation|apple events|accessibil/i.test(String(msg || ""));
+  }
+
+  function renderRecoveryCard(rawMessage) {
+    const perm = isMailPermissionError(rawMessage);
+    const title = perm
+      ? "Mail.app Automation Permission Required"
+      : "Could Not Scan Mail.app";
+    const stepsHtml = perm
+      ? `<p>macOS blocked AppleScript access to Mail.app. Grant permission and retry:</p>
+         <ol style="margin-left:18px;line-height:1.5;">
+           <li>Open <strong>System Settings → Privacy &amp; Security → Automation</strong>.</li>
+           <li>Enable <strong>Mail</strong> under your terminal app (e.g. Terminal, iTerm2, Ghostty) or Python.</li>
+           <li>Make sure Mail.app is open, or run <code>nollpost doctor</code> in your terminal to verify.</li>
+         </ol>`
+      : `<p>Nollpost encountered an error while reading Mail.app mailboxes. Make sure Mail.app is running and try again, or run <code>nollpost doctor</code> in your terminal.</p>`;
+    return `
+      <div class="empty-state scan-error">
+        <h3>${title}</h3>
+        ${stepsHtml}
+        <pre style="white-space:pre-wrap;word-break:break-word;max-width:100%;font-size:11px;background:var(--bg-primary);padding:8px 10px;border-radius:8px;border:1px solid var(--border);">${escapeHtml(rawMessage)}</pre>
+        <div class="empty-state-actions">
+          <button class="btn small primary" data-retry-scan="1">Retry Scan</button>
+        </div>
+      </div>`;
+  }
+
   function showError(msg) {
     const resEl = qs("results-banner");
     resEl.classList.remove("hidden");
-    resEl.innerHTML = `<div class="result-row"><div><span class="pill danger">error</span> ${escapeHtml(msg)}</div></div>`;
+    const tip = isMailPermissionError(msg)
+      ? `<div style="margin-top:4px;font-size:11px;color:var(--text-secondary);">Permission tip: Check <strong>System Settings → Privacy &amp; Security → Automation</strong> (enable Mail) and run <code>nollpost doctor</code>.</div>`
+      : "";
+    resEl.innerHTML = `<div class="result-row"><div><span class="pill danger">error</span> ${escapeHtml(msg)}${tip}</div></div>`;
   }
 
   async function api(path, options = {}) {
@@ -151,6 +182,7 @@
     const selPairs = nonNoopPairs(selItems);
 
     const catLabel = CATEGORIES.find((c) => c.id === state.category)?.label || "Current";
+    qs("btn-reset-actions").disabled = catPairs.length === 0 || state.category === "missed";
     qs("btn-exec-selected").textContent = `Execute Selected (${selPairs.length})`;
     qs("btn-exec-selected").disabled = selPairs.length === 0;
     qs("btn-exec-category").textContent = `Execute ${catLabel} (${catPairs.length})`;
@@ -288,7 +320,37 @@
     }
     const rowsData = filteredItems();
     if (!rowsData.length) {
-      qs("queue-container").innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-secondary);">No emails match the current filters.</div>`;
+      const allItems = state.data?.items || [];
+      const warnings = state.data?.warnings || [];
+      if (warnings.length && !allItems.length) {
+        qs("queue-container").innerHTML = renderRecoveryCard(warnings.join("\n"));
+        return;
+      }
+      if (!allItems.length) {
+        const isCatchup = state.mode === "catchup";
+        qs("queue-container").innerHTML = `
+          <div class="empty-state inbox-zero">
+            <h3>${isCatchup ? "Archive Catch-Up Complete" : "Inbox Zero!"}</h3>
+            <p>${isCatchup
+              ? "No repeat newsletters needing unsubscription were found in your Archive folders."
+              : "All scanned inboxes are empty. Nothing queued or pending right now."}</p>
+            <div class="empty-state-actions">
+              <button class="btn small primary" data-retry-scan="1">Refresh Scan</button>
+              ${!isCatchup
+                ? `<button class="btn small secondary" data-mode="catchup">Check Archive Catch-Up</button>`
+                : `<button class="btn small secondary" data-mode="inbox">Back to Daily Inbox</button>`}
+            </div>
+          </div>`;
+        return;
+      }
+      qs("queue-container").innerHTML = `
+        <div class="empty-state">
+          <h3>No emails match the current filters</h3>
+          <p>Adjust your search query, account tab, category tab, or Unread filter to see queued items.</p>
+          <div class="empty-state-actions">
+            <button class="btn small primary" id="btn-reset-filters">Reset filters</button>
+          </div>
+        </div>`;
       return;
     }
     const allVisibleSelected = rowsData.every((i) => state.selectedUids.has(i.uid));
@@ -397,11 +459,32 @@
   }
 
   async function loadState(refresh = false) {
-    qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--text-secondary);">Scanning Mail.app (${escapeHtml(state.mode)})…</div>`;
-    const data = await api(`/api/state?mode=${encodeURIComponent(state.mode)}&refresh=${refresh ? "true" : "false"}`);
-    state.data = data;
-    hydrateActionsFromData(data);
-    render();
+    qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--text-secondary);" id="scan-status-text">Scanning Mail.app (${escapeHtml(state.mode)})…</div>`;
+    let pollTimer = null;
+    if (refresh || !state.data) {
+      pollTimer = setInterval(async () => {
+        try {
+          const st = await api("/api/scan/status");
+          const el = qs("scan-status-text");
+          if (el && st.active && st.message) {
+            el.textContent = st.message;
+          }
+        } catch (_ignored) {
+          // Ignore transient polling errors while scan completes
+        }
+      }, 350);
+    }
+    try {
+      const data = await api(`/api/state?mode=${encodeURIComponent(state.mode)}&refresh=${refresh ? "true" : "false"}`);
+      state.data = data;
+      hydrateActionsFromData(data);
+      render();
+    } catch (err) {
+      qs("queue-container").innerHTML = renderRecoveryCard(err.message);
+      throw err;
+    } finally {
+      if (pollTimer) clearInterval(pollTimer);
+    }
   }
 
   async function openConfirmation(title, pairs) {
@@ -427,6 +510,12 @@
       .join("");
 
     let detailsHtml = "";
+    if ((preview.send_declines || []).length > 0) {
+      detailsHtml += `<div class="confirm-warning danger"><strong>Outbound Email Warning:</strong> This run will automatically send <strong>${preview.send_declines.length}</strong> real email reply(s) from Mail.app. Double-check the recipients below before confirming.</div>`;
+    }
+    if ((preview.unsubs || []).length > 10) {
+      detailsHtml += `<div class="confirm-warning warn"><strong>Large Unsubscribe Batch:</strong> You are about to unsubscribe from <strong>${preview.unsubs.length}</strong> senders at once. Review the list below to make sure no wanted senders are included.</div>`;
+    }
     if (archSummary) {
       detailsHtml += `<div class="preview-box"><strong>Archive Destinations (Mark Read + Move):</strong> ${escapeHtml(archSummary)}</div>`;
     }
@@ -593,10 +682,11 @@
         const reopenBtn = bestUrl
           ? ` <button type="button" class="btn small" data-open-url="${escapeHtml(bestUrl)}">Re-open Link</button>`
           : "";
+        const dismissItemBtn = `<button type="button" class="btn small secondary" data-tray-dismiss-uid="${escapeHtml(i.uid)}">Dismiss</button>`;
         const urlLine = bestUrl ? `<div style="margin-top:2px;font-size:11px;color:var(--text-secondary);word-break:break-all;"><code>${escapeHtml(bestUrl)}</code></div>` : "";
         return `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;">
           <div>• [${escapeHtml(i.account)}] <strong>${escapeHtml(i.subject)}</strong> — ${escapeHtml(i.sender)}${changedTag}${urlLine}</div>
-          <div style="flex-shrink:0;">${reopenBtn}</div>
+          <div style="flex-shrink:0;display:flex;gap:6px;">${reopenBtn}${dismissItemBtn}</div>
         </div>`;
       })
       .join("");
@@ -637,10 +727,59 @@
     qs("snapshot-modal").classList.remove("hidden");
   }
 
+  function showQuickGuideModal() {
+    qs("snap-title").textContent = "Nollpost Quick Guide";
+    qs("snap-body").innerHTML = `
+      <div class="preview-box">
+        <strong>Archive-Only Guarantee</strong>
+        <p style="margin-top:4px;line-height:1.45;">Nollpost never deletes emails. Archiving marks a message read and moves it to that account's configured Archive mailbox.</p>
+      </div>
+      <div class="preview-box">
+        <strong>Key Concepts</strong>
+        <ul class="guide-list" style="margin-top:6px;">
+          <li><strong>Step 2 Safety Tray:</strong> Items opened via <em>Read + Open link</em> or <em>Read + Show invoice</em> stay in your Mail.app Inbox and appear in the Safety Tray so you can finish reading before clicking <em>Review &amp; Sweep Opened…</em> to archive them.</li>
+          <li><strong>Archive Catch-Up:</strong> Scans your Archive folders for repeat promotional newsletters and offers <em>Unsub only</em> without modifying Inbox state.</li>
+          <li><strong>Missed-Unsub Queue:</strong> Stores senders where automatic unsubscribe lacked a reliable link or failed in headless mode. Inspect snapshots, retry, or mark resolved once handled manually.</li>
+          <li><strong>Show Browser:</strong> Leave unchecked for background headless Playwright runs; check it to watch browser interactions live.</li>
+          <li><strong>Remember… dropdown:</strong> Teach Nollpost per sender (<em>Always Keep</em>, <em>Always Archive</em>, or <em>Always Mark Read</em>).</li>
+        </ul>
+      </div>
+    `;
+    qs("snapshot-modal").classList.remove("hidden");
+  }
+
   document.addEventListener("click", async (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLElement)) return;
     try {
+      if (t.id === "btn-reset-filters") {
+        state.category = "all";
+        state.account = "all";
+        state.unreadOnly = false;
+        state.search = "";
+        qs("unread-only-toggle").checked = false;
+        qs("search-input").value = "";
+        render();
+        return;
+      }
+      if (t.dataset.retryScan) {
+        await loadState(true);
+        return;
+      }
+      if (t.dataset.trayDismissUid) {
+        await api("/api/tray/dismiss", {
+          method: "POST",
+          body: JSON.stringify({ uids: [t.dataset.trayDismissUid] }),
+        });
+        await loadState(false);
+        if ((state.data?.tray || []).length > 0) {
+          await openTrayConfirmation();
+        } else {
+          state.confirmCallback = null;
+          qs("confirm-modal").classList.add("hidden");
+        }
+        return;
+      }
       if (t.dataset.openUrl && isSafeHttpUrl(t.dataset.openUrl)) {
         window.open(t.dataset.openUrl, "_blank", "noopener,noreferrer");
         return;
@@ -813,6 +952,13 @@
     render();
   });
   qs("refresh-btn").addEventListener("click", () => loadState(true).catch((e) => showError(e.message)));
+  qs("help-btn").addEventListener("click", () => showQuickGuideModal());
+  qs("btn-reset-actions").addEventListener("click", () => {
+    for (const item of filteredItems()) {
+      state.actionsByUid.set(item.uid, "no_action");
+    }
+    render();
+  });
   qs("btn-exec-selected").addEventListener("click", () => {
     const items = (state.data?.items || []).filter((i) => state.selectedUids.has(i.uid));
     openConfirmation("Confirm Selected Actions", nonNoopPairs(items)).catch((e) => showError(e.message));
@@ -825,14 +971,22 @@
     openConfirmation("Confirm All Queued Actions", nonNoopPairs(state.data?.items || [])).catch((e) => showError(e.message));
   });
   qs("btn-tray-sweep").addEventListener("click", () => openTrayConfirmation().catch((e) => showError(e.message)));
-  qs("btn-tray-dismiss").addEventListener("click", async () => {
-    try {
-      const uids = (state.data?.tray || []).map((t) => t.message_uid);
+  qs("btn-tray-dismiss").addEventListener("click", () => {
+    const tray = state.data?.tray || [];
+    if (!tray.length) return;
+    const uids = tray.map((t) => t.message_uid);
+    qs("modal-title").textContent = `Confirm Dismiss Safety Tray (${tray.length} items)`;
+    qs("modal-body").innerHTML = `
+      <div class="confirm-warning warn">
+        Dismissing the Safety Tray clears <strong>${tray.length}</strong> opened item(s) from this reminder tray only. Your emails will remain untouched in Mail.app Inbox.
+      </div>
+    `;
+    qs("confirm-modal").classList.remove("hidden");
+    state.confirmCallback = async () => {
+      qs("confirm-modal").classList.add("hidden");
       await api("/api/tray/dismiss", { method: "POST", body: JSON.stringify({ uids }) });
       await loadState(false);
-    } catch (e) {
-      showError(e.message);
-    }
+    };
   });
   qs("modal-cancel").addEventListener("click", () => {
     state.confirmCallback = null;
@@ -846,6 +1000,6 @@
   qs("snap-close").addEventListener("click", () => qs("snapshot-modal").classList.add("hidden"));
 
   loadState(false).catch((err) => {
-    qs("queue-container").innerHTML = `<div style="padding:20px;color:var(--danger);">Failed to load: ${escapeHtml(err.message)}</div>`;
+    showError(err.message);
   });
 })();
