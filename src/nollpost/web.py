@@ -31,6 +31,7 @@ from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.playwright_runner import is_public_http_url, run_playwright_action
 from nollpost.scanner import ScanSnapshot, run_scan
 from nollpost.store import TriageStore
+from nollpost.updates import async_check_for_update
 
 STATIC_DIR = Path(__file__).parent / "static"
 LOCALES_DIR = STATIC_DIR / "locales"
@@ -396,6 +397,14 @@ def create_app(
             "messages": load_ui_locale_messages(resolved),
         }
 
+    @app.get("/api/updates")
+    async def api_updates(refresh: bool = False) -> dict[str, Any]:
+        return await async_check_for_update(
+            runtime.config.cache_dir,
+            enabled=runtime.config.check_updates,
+            force_refresh=refresh,
+        )
+
     @app.get("/api/state")
     async def api_state(mode: str = "inbox", refresh: bool = False) -> dict[str, Any]:
         snap = await runtime.get_snapshot(mode=mode, refresh=refresh, bypass_cache=refresh)
@@ -453,6 +462,7 @@ def create_app(
                 "display_name": cfg.display_name,
                 "ui_language": cfg.ui_language,
                 "available_ui_languages": list_available_ui_locales(),
+                "check_updates": cfg.check_updates,
                 "mark_read_on_archive": cfg.mark_read_on_archive,
                 "max_inbox_messages": cfg.max_inbox_messages,
                 "catchup_scan_limit": cfg.catchup_scan_limit,

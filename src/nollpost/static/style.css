@@ -131,7 +131,7 @@ h1 { font-size: 16px; font-weight: 700; margin-bottom: 5px; }
   cursor: pointer;
 }
 
-.tray {
+.tray, .update-banner {
   padding: 9px 12px;
   border-radius: 8px;
   border: 1px dashed var(--accent);
@@ -141,6 +141,16 @@ h1 { font-size: 16px; font-weight: 700; margin-bottom: 5px; }
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+.update-banner {
+  border-style: solid;
+  font-size: 12px;
+}
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .hidden { display: none !important; }

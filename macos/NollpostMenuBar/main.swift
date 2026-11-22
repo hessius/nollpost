@@ -51,6 +51,7 @@ private enum ServerState: Equatable {
 final class NollpostMenuApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var stateMenuItem: NSMenuItem!
+    private var updateNoticeMenuItem: NSMenuItem!
     private var openBoardMenuItem: NSMenuItem!
     private var startStopMenuItem: NSMenuItem!
     private var restartMenuItem: NSMenuItem!
@@ -60,6 +61,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
     private var serverState: ServerState = .stopped {
         didSet { updateMenuState() }
     }
+    private var latestAvailableVersion: String?
     private var lineBuffer = ""
     private var recentLogLines: [String] = []
     private var pendingBrowserOpen = false
@@ -78,6 +80,9 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         buildStatusMenu()
         openLogFile()
         updateMenuState()
+        if !isUpdateCheckDisabledByUser() {
+            checkForUpdates(interactive: false)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -101,6 +106,11 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         stateMenuItem = NSMenuItem(title: serverState.menuSummary, action: nil, keyEquivalent: "")
         stateMenuItem.isEnabled = false
         menu.addItem(stateMenuItem)
+
+        updateNoticeMenuItem = NSMenuItem(title: "", action: #selector(showUpdatePrompt(_:)), keyEquivalent: "")
+        updateNoticeMenuItem.target = self
+        updateNoticeMenuItem.isHidden = true
+        menu.addItem(updateNoticeMenuItem)
         menu.addItem(.separator())
 
         openBoardMenuItem = NSMenuItem(title: "Open Review Board", action: #selector(openReviewBoard(_:)), keyEquivalent: "o")
@@ -136,6 +146,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         let logItem = NSMenuItem(title: "Open Server Log", action: #selector(openLogInConsole(_:)), keyEquivalent: "l")
         logItem.target = self
         menu.addItem(logItem)
+
+        let updateCheckItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesManually(_:)), keyEquivalent: "u")
+        updateCheckItem.target = self
+        menu.addItem(updateCheckItem)
 
         let quitItem = NSMenuItem(title: "Quit Nollpost", action: #selector(quitApp(_:)), keyEquivalent: "q")
         quitItem.target = self
@@ -579,6 +593,205 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
             let rem = c["remediation"] as? String ?? ""
             return rem.isEmpty ? "[\(st)] \(name): \(detail)" : "[\(st)] \(name): \(detail)\n  -> \(rem)"
         }.joined(separator: "\n")
+    }
+
+    private nonisolated static let tapFormulaURLString =
+        "https://raw.githubusercontent.com/Hessius/homebrew-tap/main/Formula/nollpost.rb"
+    private nonisolated static let upgradeCommand = "brew upgrade hessius/tap/nollpost"
+
+    private func installedBundleVersion() -> String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
+    }
+
+    private func resolvedConfigPath() -> String {
+        let env = ProcessInfo.processInfo.environment
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        if let raw = env["NOLLPOST_CONFIG"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            return (raw as NSString).expandingTildeInPath
+        }
+        let nollpostCfg = "\(home)/.config/nollpost/config.toml"
+        if fm.fileExists(atPath: nollpostCfg) {
+            return nollpostCfg
+        }
+        if let rawLegacy = env["MAIL_TRIAGE_CONFIG"]?.trimmingCharacters(in: .whitespacesAndNewlines), !rawLegacy.isEmpty {
+            return (rawLegacy as NSString).expandingTildeInPath
+        }
+        let legacyCfg = "\(home)/.config/mail-triage/config.toml"
+        if fm.fileExists(atPath: legacyCfg) {
+            return legacyCfg
+        }
+        return nollpostCfg
+    }
+
+    private func isUpdateCheckDisabledByUser() -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        if let flag = env["NOLLPOST_NO_UPDATE_CHECK"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           ["1", "true", "yes"].contains(flag) {
+            return true
+        }
+        guard let text = try? String(contentsOfFile: resolvedConfigPath(), encoding: .utf8) else {
+            return false
+        }
+        var currentSection = ""
+        var inMultiline = false
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.contains("\"\"\"") {
+                let parts = trimmed.components(separatedBy: "\"\"\"").count - 1
+                if parts % 2 == 1 { inMultiline.toggle() }
+                continue
+            }
+            if inMultiline || trimmed.isEmpty || trimmed.hasPrefix("#") {
+                continue
+            }
+            if trimmed.hasPrefix("["), let closeIdx = trimmed.firstIndex(of: "]") {
+                currentSection = String(trimmed[trimmed.index(after: trimmed.startIndex)..<closeIdx])
+                    .trimmingCharacters(in: .whitespaces)
+                continue
+            }
+            guard currentSection == "user" else { continue }
+            let uncommented = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                .trimmingCharacters(in: .whitespaces)
+            if uncommented.range(of: #"^check_updates\s*=\s*false\b"#, options: .regularExpression) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private nonisolated static func parseFormulaVersion(_ formulaText: String) -> String? {
+        let patterns = [
+            #"archive/refs/tags/v([0-9]+(?:\.[0-9]+)*)\.tar\.gz"#,
+            #"^\s*version\s+"v?([0-9]+(?:\.[0-9]+)*)""#,
+        ]
+        for pat in patterns {
+            if let regex = try? NSRegularExpression(pattern: pat, options: [.anchorsMatchLines]),
+               let match = regex.firstMatch(in: formulaText, range: NSRange(formulaText.startIndex..., in: formulaText)),
+               match.numberOfRanges > 1,
+               let range = Range(match.range(at: 1), in: formulaText) {
+                return String(formulaText[range])
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func parseVersionParts(_ raw: String) -> [Int] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let regex = try? NSRegularExpression(pattern: #"^[vV]?(\d+(?:\.\d+)*)"#),
+            let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+            match.numberOfRanges > 1,
+            let range = Range(match.range(at: 1), in: trimmed)
+        else {
+            return []
+        }
+        return trimmed[range].split(separator: ".").compactMap { Int($0) }
+    }
+
+    private nonisolated static func isNewerVersion(_ latest: String, current: String) -> Bool {
+        let l = parseVersionParts(latest)
+        let c = parseVersionParts(current)
+        guard !l.isEmpty && !c.isEmpty else { return false }
+        let count = max(l.count, c.count)
+        for idx in 0..<count {
+            let lv = idx < l.count ? l[idx] : 0
+            let cv = idx < c.count ? c[idx] : 0
+            if lv != cv { return lv > cv }
+        }
+        return false
+    }
+
+    private func checkForUpdates(interactive: Bool) {
+        let env = ProcessInfo.processInfo.environment
+        let targetRaw = (env["NOLLPOST_UPDATE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? Self.tapFormulaURLString
+        guard let url = URL(string: targetRaw) else {
+            if interactive {
+                showAlert(style: .warning, title: "Update Check Failed", message: "Invalid update URL: \(targetRaw)")
+            }
+            return
+        }
+        let current = installedBundleVersion()
+
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 3.0
+        cfg.timeoutIntervalForResource = 5.0
+        let session = URLSession(configuration: cfg)
+
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3.0
+        req.setValue("nollpost-menubar/\(current)", forHTTPHeaderField: "User-Agent")
+        session.dataTask(with: req) { [weak self] data, response, error in
+            session.finishTasksAndInvalidate()
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let isHttpOk = (200..<300).contains(statusCode)
+            let parsedVersion = isHttpOk
+                ? data.map { String(decoding: $0, as: UTF8.self) }.flatMap { Self.parseFormulaVersion($0) }
+                : nil
+            let errText: String? = error?.localizedDescription ?? (!isHttpOk
+                ? "HTTP \(statusCode) from tap formula"
+                : (parsedVersion == nil ? "Could not parse version from Homebrew formula" : nil))
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let latest = parsedVersion, Self.isNewerVersion(latest, current: current) {
+                    self.latestAvailableVersion = latest
+                    self.updateNoticeMenuItem?.title = "Update Available: v\(latest) (brew upgrade)..."
+                    self.updateNoticeMenuItem?.isHidden = false
+                    if interactive {
+                        self.presentUpdateAlert(latest: latest, current: current)
+                    }
+                } else {
+                    self.latestAvailableVersion = nil
+                    self.updateNoticeMenuItem?.isHidden = true
+                    if interactive {
+                        if let errText {
+                            self.showAlert(style: .warning, title: "Update Check Failed", message: errText)
+                        } else {
+                            self.showAlert(
+                                style: .informational,
+                                title: "Nollpost is Up to Date",
+                                message: "Installed version: v\(current)"
+                            )
+                        }
+                    }
+                }
+            }
+        }.resume()
+    }
+
+    private func presentUpdateAlert(latest: String, current: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Nollpost v\(latest) Available"
+        alert.informativeText = """
+        You are currently running v\(current).
+
+        Upgrade via Homebrew:
+          \(Self.upgradeCommand)
+        """
+        alert.addButton(withTitle: "Copy Upgrade Command")
+        alert.addButton(withTitle: "View Release Notes")
+        alert.addButton(withTitle: "Close")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(Self.upgradeCommand, forType: .string)
+        } else if response == .alertSecondButtonReturn,
+                  let url = URL(string: "https://github.com/Hessius/nollpost/releases/tag/v\(latest)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func checkForUpdatesManually(_ sender: Any?) {
+        checkForUpdates(interactive: true)
+    }
+
+    @objc private func showUpdatePrompt(_ sender: Any?) {
+        guard let latest = latestAvailableVersion else { return }
+        presentUpdateAlert(latest: latest, current: installedBundleVersion())
     }
 
     @objc private func openAutomationSettings(_ sender: Any?) {
