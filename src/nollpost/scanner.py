@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Optional
 
 from nollpost.classifier import classify_email
 from nollpost.config import TriageConfig
@@ -152,16 +152,38 @@ def run_scan(
     bridge: AppleMailBridge,
     mode: str = "inbox",
     bypass_cache: bool = False,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> ScanSnapshot:
     """Scan all configured Mail.app accounts in either 'inbox' or 'catchup' mode."""
+    def _emit(phase: str, message: str, done: int = 0, total: int = 0, account: str = "") -> None:
+        if on_progress is not None:
+            on_progress({
+                "active": True,
+                "mode": mode,
+                "phase": phase,
+                "message": message,
+                "done": done,
+                "total": total,
+                "account": account,
+            })
+
+    _emit("accounts", "Listing Mail.app accounts…")
     accounts = bridge.list_accounts()
+    total_accounts = len(accounts)
     items: list[ClassifiedItem] = []
     warnings: list[str] = []
     unsub_patterns = load_unsub_patterns(config.patterns_path)
     patterns_sig = _patterns_cache_sig(config)
 
     if mode == "catchup":
-        for acct in accounts:
+        for acct_idx, acct in enumerate(accounts, start=1):
+            _emit(
+                "mailbox",
+                f"Scanning {acct.name}/{acct.archive_mailbox} ({acct_idx}/{total_accounts})…",
+                done=acct_idx - 1,
+                total=total_accounts,
+                account=acct.name,
+            )
             try:
                 headers = bridge.scan_mailbox_metadata(
                     acct.name,
@@ -185,7 +207,16 @@ def run_scan(
                 key=lambda pair: len(pair[1]),
                 reverse=True,
             )
-            for _key, grp in repeat_groups:
+            total_groups = len(repeat_groups)
+            for grp_idx, (_key, grp) in enumerate(repeat_groups, start=1):
+                if grp_idx == 1 or grp_idx == total_groups or grp_idx % 5 == 0:
+                    _emit(
+                        "extract",
+                        f"Inspecting repeat senders in {acct.name} ({grp_idx}/{total_groups})…",
+                        done=grp_idx,
+                        total=total_groups,
+                        account=acct.name,
+                    )
                 sample = grp[0]
                 sender_mem = store.get_sender_memory(sample.sender_email, sample.sender_domain)
                 if sender_mem and (sender_mem.unsubscribed_at or sender_mem.keep_subscribed):
@@ -219,7 +250,14 @@ def run_scan(
     else:
         active_uids: set[str] = set()
         any_inbox_scanned = False
-        for acct in accounts:
+        for acct_idx, acct in enumerate(accounts, start=1):
+            _emit(
+                "mailbox",
+                f"Scanning {acct.name}/{acct.inbox_mailbox} ({acct_idx}/{total_accounts})…",
+                done=acct_idx - 1,
+                total=total_accounts,
+                account=acct.name,
+            )
             try:
                 headers = bridge.scan_mailbox_metadata(
                     acct.name,
@@ -237,7 +275,16 @@ def run_scan(
                 for h in headers
                 if h.sender_email or h.sender_domain
             )
-            for h in headers:
+            total_headers = len(headers)
+            for msg_idx, h in enumerate(headers, start=1):
+                if msg_idx == 1 or msg_idx == total_headers or msg_idx % 5 == 0:
+                    _emit(
+                        "extract",
+                        f"Classifying {acct.name}/{acct.inbox_mailbox} ({msg_idx}/{total_headers})…",
+                        done=msg_idx,
+                        total=total_headers,
+                        account=acct.name,
+                    )
                 uid = f"{h.account}:{h.mailbox}:{h.internal_id}"
                 active_uids.add(uid)
                 try:
@@ -268,6 +315,7 @@ def run_scan(
         if any_inbox_scanned and not warnings:
             store.prune_tray_not_in_inbox(active_uids)
 
+    _emit("done", "Scan complete", done=total_accounts, total=total_accounts)
     return ScanSnapshot(
         mode=mode,
         accounts=accounts,

@@ -411,3 +411,77 @@ def test_ui_and_api_support_arbitrary_accounts_and_consulting_visibility(tmp_pat
     with TestClient(app2) as client2:
         st2 = client2.get("/api/state", headers={"X-Triage-Key": token2}).json()
         assert st2["consulting_enabled"] is True
+
+
+def test_scan_progress_and_ui_safety_controls(tmp_path: Path, monkeypatch):
+    _setup_test_env(tmp_path, monkeypatch)
+
+    from nollpost.scanner import run_scan
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    bridge = FakeBridge()
+
+    events: list[dict] = []
+    run_scan(cfg, store, bridge, mode="inbox", on_progress=events.append)
+    phases = [e["phase"] for e in events]
+    assert "accounts" in phases
+    assert "mailbox" in phases
+    assert "done" in phases
+
+    catchup_events: list[dict] = []
+    run_scan(cfg, store, bridge, mode="catchup", on_progress=catchup_events.append)
+    cphases = [e["phase"] for e in catchup_events]
+    assert "accounts" in cphases
+    assert "mailbox" in cphases
+    assert "done" in cphases
+
+    store.add_opened_tray_item(
+        message_uid="iCloud:INBOX:10",
+        account="iCloud",
+        mailbox="INBOX",
+        internal_id="10",
+        rfc_message_id="m10",
+        subject="Deal 1",
+        sender="Shop",
+        opened_target="https://shop.example/1",
+    )
+    store.add_opened_tray_item(
+        message_uid="iCloud:INBOX:11",
+        account="iCloud",
+        mailbox="INBOX",
+        internal_id="11",
+        rfc_message_id="m11",
+        subject="Deal 2",
+        sender="Mystery",
+        opened_target="https://mystery.example/2",
+    )
+
+    app, token = create_app(cfg, store, bridge, token="ui-tok")
+    with TestClient(app) as client:
+        # Unauthenticated access to /api/scan/status blocked
+        assert client.get("/api/scan/status").status_code == 401
+        status = client.get("/api/scan/status", headers={"X-Triage-Key": token})
+        assert status.status_code == 200
+        assert status.json()["active"] is False
+
+        # Per-item tray dismiss leaves the other item intact
+        resp = client.post(
+            "/api/tray/dismiss",
+            headers={"X-Triage-Key": token},
+            json={"uids": ["iCloud:INBOX:10"]},
+        )
+        assert resp.status_code == 200
+        remaining = resp.json()["tray"]
+        assert [t["message_uid"] for t in remaining] == ["iCloud:INBOX:11"]
+
+        html = client.get(f"/?key={token}").text
+        app_js = client.get("/static/app.js").text
+        assert 'id="help-btn"' in html
+        assert 'id="btn-reset-actions"' in html
+        assert "btn-reset-filters" in app_js
+        assert "Confirm Dismiss Safety Tray" in app_js
+        assert "data-tray-dismiss-uid" in app_js
+        assert "Outbound Email Warning" in app_js
+        assert "System Settings" in app_js
+        assert "/api/scan/status" in app_js

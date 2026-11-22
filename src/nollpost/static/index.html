@@ -16,20 +16,22 @@
         </div>
         <div class="header-controls">
           <div class="mode-switch">
-            <button class="btn small active" id="mode-inbox" data-mode="inbox">Daily Inbox</button>
-            <button class="btn small" id="mode-catchup" data-mode="catchup">Archive Catch-Up</button>
+            <button class="btn small active" id="mode-inbox" data-mode="inbox" title="Scan active INBOX folders across your Mail.app accounts">Daily Inbox</button>
+            <button class="btn small" id="mode-catchup" data-mode="catchup" title="Find repeat newsletters in your Archive mailboxes so you can unsubscribe safely">Archive Catch-Up</button>
           </div>
           <label class="toggle-check" title="Show Chromium window while unsubscribing/declining">
             <input type="checkbox" id="show-browser-toggle" />
             <span>Show Browser</span>
           </label>
           <button class="btn small" id="refresh-btn">Refresh Scan</button>
+          <button class="btn small secondary" id="help-btn" title="Open Nollpost Quick Guide">? Guide</button>
         </div>
       </div>
 
       <div class="exec-bar">
         <div class="batch-summary" id="batch-summary">Loading mailboxes…</div>
         <div class="exec-buttons">
+          <button class="btn secondary" id="btn-reset-actions" title="Set all visible rows to No action" disabled>Reset Visible to No action</button>
           <button class="btn outline-accent" id="btn-exec-selected" disabled>Execute Selected (0)</button>
           <button class="btn secondary" id="btn-exec-category" disabled>Execute Category (0)</button>
           <button class="btn primary" id="btn-exec-all" disabled>Execute All Actions (0)</button>

@@ -86,6 +86,17 @@ class AppRuntime:
     jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     scan_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     background_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    scan_progress: dict[str, Any] = field(
+        default_factory=lambda: {
+            "active": False,
+            "mode": "inbox",
+            "phase": "idle",
+            "message": "",
+            "done": 0,
+            "total": 0,
+            "account": "",
+        }
+    )
 
     def _enrich_tray(self, inbox_snap: Optional[ScanSnapshot] = None) -> list[dict[str, Any]]:
         rows = self.store.list_active_tray()
@@ -113,14 +124,39 @@ class AppRuntime:
             raise HTTPException(status_code=400, detail="Invalid mode")
         async with self.scan_lock:
             if refresh or mode not in self.snapshots:
-                snap = await asyncio.to_thread(
-                    run_scan,
-                    self.config,
-                    self.store,
-                    self.bridge,
-                    mode=mode,
-                    bypass_cache=bypass_cache,
-                )
+                self.scan_progress = {
+                    "active": True,
+                    "mode": mode,
+                    "phase": "starting",
+                    "message": f"Starting {mode} scan…",
+                    "done": 0,
+                    "total": 0,
+                    "account": "",
+                }
+
+                def _on_progress(prog: dict[str, Any]) -> None:
+                    self.scan_progress = dict(prog)
+
+                try:
+                    snap = await asyncio.to_thread(
+                        run_scan,
+                        self.config,
+                        self.store,
+                        self.bridge,
+                        mode=mode,
+                        bypass_cache=bypass_cache,
+                        on_progress=_on_progress,
+                    )
+                finally:
+                    self.scan_progress = {
+                        "active": False,
+                        "mode": mode,
+                        "phase": "idle",
+                        "message": "",
+                        "done": 0,
+                        "total": 0,
+                        "account": "",
+                    }
                 self.snapshots[mode] = snap
             else:
                 snap = self.snapshots[mode]
@@ -201,6 +237,10 @@ def create_app(
     async def api_scan(mode: str = "inbox") -> dict[str, Any]:
         snap = await runtime.get_snapshot(mode=mode, refresh=True, bypass_cache=True)
         return snap.to_dict()
+
+    @app.get("/api/scan/status")
+    async def api_scan_status() -> dict[str, Any]:
+        return dict(runtime.scan_progress)
 
     @app.post("/api/preferences")
     async def api_preferences(req: PreferenceRequest) -> dict[str, Any]:
