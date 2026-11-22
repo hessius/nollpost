@@ -22,6 +22,7 @@ from nollpost.config import TriageConfig
 from nollpost.executor import BatchExecutor
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
 from nollpost.models import ClassifiedItem
+from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.playwright_runner import is_public_http_url, run_playwright_action
 from nollpost.scanner import ScanSnapshot, run_scan
 from nollpost.store import TriageStore
@@ -527,6 +528,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="No valid public URL available to retry")
 
         outcome = None
+        unsub_patterns = load_unsub_patterns(runtime.config.patterns_path)
         for target_url in valid_urls[:2]:
             outcome = await run_playwright_action(
                 target_url,
@@ -534,6 +536,9 @@ def create_app(
                 screenshots_dir=runtime.config.screenshots_dir,
                 headless=req.headless,
                 allow_private=allow_private_urls,
+                browser_locale=runtime.config.browser_locale,
+                accept_language=runtime.config.accept_language,
+                patterns=unsub_patterns,
             )
             if outcome.status == "success":
                 break

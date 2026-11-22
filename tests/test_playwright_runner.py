@@ -258,3 +258,42 @@ async def test_ssrf_guard_blocks_private_and_non_http_and_failed_goto_preserves_
     assert goto_fail.status == "failed"
     assert goto_fail.final_url != "about:blank"
     assert goto_fail.final_url == unreachable_url
+
+
+@pytest.mark.asyncio
+async def test_playwright_respects_configured_browser_locale(tmp_path: Path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen_accept_lang: list[str] = []
+
+    class LangHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            seen_accept_lang.append(self.headers.get("Accept-Language", ""))
+            body = b"<html><body><h1>You have been unsubscribed</h1></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), LangHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        res = await run_playwright_action(
+            f"http://127.0.0.1:{srv.server_address[1]}/unsub",
+            mode="unsubscribe",
+            screenshots_dir=tmp_path,
+            headless=True,
+            allow_private=True,
+            browser_locale="fr-FR",
+            accept_language="fr-FR,fr;q=0.9,en;q=0.8",
+        )
+        assert res.status == "success"
+        assert seen_accept_lang and seen_accept_lang[0].startswith("fr-FR")
+    finally:
+        srv.shutdown()

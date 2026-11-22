@@ -19,6 +19,7 @@ from nollpost.models import (
     PdfAttachment,
     UnsubTarget,
 )
+from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.store import TriageStore
 
 EXTRACTOR_VERSION = "v5"
@@ -91,6 +92,7 @@ def _extract_cached(
         consulting_enabled=config.consulting_enabled,
         wanted_domains=config.wanted_domains,
         enabled_packs=config.enabled_packs,
+        patterns=load_unsub_patterns(config.patterns_path),
     )
     payload = extracted.to_dict()
     payload["headers_snapshot"] = extracted.headers_snapshot
