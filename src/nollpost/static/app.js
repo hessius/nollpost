@@ -956,6 +956,10 @@
             <label for="cfg-gmail-strategy">${escapeHtml(t("settings.gmail_strategy"))}</label>
             <select id="cfg-gmail-strategy">${stratOpts}</select>
           </div>
+          <div class="settings-field">
+            <label for="cfg-idle-timeout">${escapeHtml(t("settings.idle_timeout"))}</label>
+            <input id="cfg-idle-timeout" type="number" min="0" max="1440" value="${Number(u.idle_timeout_minutes ?? 45)}" />
+          </div>
         </div>
         <div style="margin-top:8px;">
           <label class="toggle-check">
@@ -1334,6 +1338,10 @@
               max_inbox_messages: Number(qs("cfg-max-inbox")?.value || 500),
               catchup_scan_limit: Number(qs("cfg-catchup-limit")?.value || 200),
               catchup_days_back: Number(qs("cfg-catchup-days")?.value || 14),
+              idle_timeout_minutes: (() => {
+                const raw = qs("cfg-idle-timeout")?.value?.trim() ?? "";
+                return raw === "" ? 45 : Number(raw);
+              })(),
             },
             accounts: {
               gmail_archive_strategy: qs("cfg-gmail-strategy")?.value || "ui_menu",

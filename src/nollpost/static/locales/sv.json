@@ -193,6 +193,7 @@
   "settings.ui_language_auto": "Auto (Webbläsare / OS)",
   "settings.mark_read": "Markera mejl som lästa vid arkivering",
   "settings.check_updates": "Sök efter nya versioner av Nollpost via Homebrew",
+  "settings.idle_timeout": "Automatisk vila (minuter, 0 = av)",
   "settings.archive_map": "Arkivmappar per konto (en <code>Konto = Mapp</code> per rad; Papperskorg/Skräp blockeras)",
   "settings.section_rules": "Domäner, nyckelord & regelpaket",
   "settings.no_packs": "Inga inbyggda regelpaket hittades",

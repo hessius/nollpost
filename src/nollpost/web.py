@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import os
 import re
 import secrets
+import signal
 import subprocess
+import time
 import tomllib
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -201,6 +204,7 @@ class AppRuntime:
     jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     scan_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     background_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    last_activity_at: float = field(default_factory=time.monotonic)
     scan_progress: dict[str, Any] = field(
         default_factory=lambda: {
             "active": False,
@@ -212,6 +216,16 @@ class AppRuntime:
             "account": "",
         }
     )
+
+    def touch_activity(self) -> None:
+        self.last_activity_at = time.monotonic()
+
+    def has_active_work(self) -> bool:
+        return bool(
+            self.scan_lock.locked()
+            or self.scan_progress.get("active")
+            or any(j.get("status") == "running" for j in self.jobs.values())
+        )
 
     def _enrich_tray(self, inbox_snap: Optional[ScanSnapshot] = None) -> list[dict[str, Any]]:
         rows = self.store.list_active_tray()
@@ -272,6 +286,7 @@ class AppRuntime:
                         "total": 0,
                         "account": "",
                     }
+                    self.touch_activity()
                 self.snapshots[mode] = snap
             else:
                 snap = self.snapshots[mode]
@@ -289,6 +304,9 @@ def create_app(
     preload: bool = False,
     allow_private_urls: bool = False,
     open_browser_url: Optional[str] = None,
+    idle_timeout_seconds: Optional[float] = None,
+    idle_poll_interval: float = 15.0,
+    on_idle_shutdown: Optional[Callable[[], None]] = None,
 ) -> tuple[FastAPI, str]:
     auth_token = token or secrets.token_urlsafe(24)
     executor = BatchExecutor(
@@ -307,6 +325,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        lifespan_tasks: set[asyncio.Task[Any]] = set()
+        current_loop = asyncio.get_running_loop()
+
         async def _preload_inbox() -> None:
             try:
                 await runtime.get_snapshot(mode="inbox", refresh=True)
@@ -337,25 +358,60 @@ def create_app(
                 await asyncio.sleep(0.25)
             subprocess.Popen(["open", target_url])
 
+        async def _idle_watchdog() -> None:
+            while True:
+                await asyncio.sleep(max(0.02, float(idle_poll_interval)))
+                if runtime.has_active_work():
+                    runtime.touch_activity()
+                    continue
+                timeout_secs = (
+                    float(idle_timeout_seconds)
+                    if idle_timeout_seconds is not None
+                    else float(runtime.config.idle_timeout_minutes) * 60.0
+                )
+                if timeout_secs <= 0:
+                    continue
+                if time.monotonic() - runtime.last_activity_at >= timeout_secs:
+                    mins = max(1, round(timeout_secs / 60.0)) if timeout_secs >= 60 else 0
+                    msg = (
+                        f"Stopping Nollpost Review Board after {mins}m of inactivity (idle mode)."
+                        if mins
+                        else "Stopping Nollpost Review Board after inactivity timeout (idle mode)."
+                    )
+                    print(msg, flush=True)
+                    if on_idle_shutdown is not None:
+                        on_idle_shutdown()
+                    else:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    return
+
         if preload:
             preload_task = asyncio.create_task(_preload_inbox())
-            runtime.background_tasks.add(preload_task)
-            preload_task.add_done_callback(runtime.background_tasks.discard)
+            lifespan_tasks.add(preload_task)
+            preload_task.add_done_callback(lifespan_tasks.discard)
             # Yield once so preload acquires scan_lock before browser requests arrive
             await asyncio.sleep(0)
         if open_browser_url:
             browser_task = asyncio.create_task(_open_browser_when_ready(open_browser_url))
-            runtime.background_tasks.add(browser_task)
-            browser_task.add_done_callback(runtime.background_tasks.discard)
+            lifespan_tasks.add(browser_task)
+            browser_task.add_done_callback(lifespan_tasks.discard)
+        if idle_timeout_seconds is None or idle_timeout_seconds > 0:
+            idle_task = asyncio.create_task(_idle_watchdog())
+            lifespan_tasks.add(idle_task)
+            idle_task.add_done_callback(lifespan_tasks.discard)
         try:
             yield
         finally:
-            for bg_task in list(runtime.background_tasks):
-                bg_task.cancel()
-            if runtime.background_tasks:
-                await asyncio.gather(*runtime.background_tasks, return_exceptions=True)
+            to_wait: list[asyncio.Task[Any]] = []
+            for bg_task in list(lifespan_tasks) + list(runtime.background_tasks):
+                if bg_task.get_loop() is current_loop:
+                    bg_task.cancel()
+                    to_wait.append(bg_task)
+            if to_wait:
+                await asyncio.gather(*to_wait, return_exceptions=True)
 
     app = FastAPI(title="Nollpost Review Board", lifespan=lifespan)
+    app.state.runtime = runtime
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -367,6 +423,7 @@ def create_app(
         candidate = key_param or header_key or cookie_val
         if not hmac.compare_digest(candidate, auth_token):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        runtime.touch_activity()
         response = await call_next(request)
         if key_param and hmac.compare_digest(key_param, auth_token) and not hmac.compare_digest(cookie_val, auth_token):
             response.set_cookie("triage_key", auth_token, httponly=True, samesite="strict")
@@ -463,6 +520,7 @@ def create_app(
                 "ui_language": cfg.ui_language,
                 "available_ui_languages": list_available_ui_locales(),
                 "check_updates": cfg.check_updates,
+                "idle_timeout_minutes": cfg.idle_timeout_minutes,
                 "mark_read_on_archive": cfg.mark_read_on_archive,
                 "max_inbox_messages": cfg.max_inbox_messages,
                 "catchup_scan_limit": cfg.catchup_scan_limit,
@@ -611,26 +669,29 @@ def create_app(
 
         async def runner() -> None:
             try:
-                results = await runtime.executor.execute_batch(
-                    pairs,
-                    acct_addrs,
-                    headless=req.headless,
-                    on_progress=on_prog,
-                )
-                runtime.jobs[job_id]["results"] = [r.to_dict() for r in results]
-            except Exception as exc:
-                runtime.jobs[job_id]["status"] = "error"
-                runtime.jobs[job_id]["message"] = str(exc)
-                return
+                try:
+                    results = await runtime.executor.execute_batch(
+                        pairs,
+                        acct_addrs,
+                        headless=req.headless,
+                        on_progress=on_prog,
+                    )
+                    runtime.jobs[job_id]["results"] = [r.to_dict() for r in results]
+                except Exception as exc:
+                    runtime.jobs[job_id]["status"] = "error"
+                    runtime.jobs[job_id]["message"] = str(exc)
+                    return
 
-            try:
-                runtime.jobs[job_id]["message"] = "Step 3/3 · Refreshing Apple Mail inbox view..."
-                await runtime.get_snapshot(mode=req.mode, refresh=True, bypass_cache=False)
-            except Exception as scan_exc:
-                runtime.jobs[job_id]["scan_warning"] = f"Actions completed, but inbox refresh failed: {scan_exc}"
-            runtime.jobs[job_id]["done"] = runtime.jobs[job_id]["total"]
-            runtime.jobs[job_id]["message"] = "Completed"
-            runtime.jobs[job_id]["status"] = "completed"
+                try:
+                    runtime.jobs[job_id]["message"] = "Step 3/3 · Refreshing Apple Mail inbox view..."
+                    await runtime.get_snapshot(mode=req.mode, refresh=True, bypass_cache=False)
+                except Exception as scan_exc:
+                    runtime.jobs[job_id]["scan_warning"] = f"Actions completed, but inbox refresh failed: {scan_exc}"
+                runtime.jobs[job_id]["done"] = runtime.jobs[job_id]["total"]
+                runtime.jobs[job_id]["message"] = "Completed"
+                runtime.jobs[job_id]["status"] = "completed"
+            finally:
+                runtime.touch_activity()
 
         task = asyncio.create_task(runner())
         runtime.background_tasks.add(task)

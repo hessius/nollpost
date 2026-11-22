@@ -193,6 +193,7 @@
   "settings.ui_language_auto": "Auto (Browser / OS)",
   "settings.mark_read": "Mark messages as read when archiving",
   "settings.check_updates": "Check for new Nollpost releases via Homebrew tap",
+  "settings.idle_timeout": "Idle Auto-Stop (minutes, 0 = off)",
   "settings.archive_map": "Per-Account Archive Overrides (one <code>Account = Mailbox</code> per line; Trash/Junk blocked)",
   "settings.section_rules": "Domains, Keywords & Rule Packs",
   "settings.no_packs": "No built-in packs found",
