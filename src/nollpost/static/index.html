@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Nollpost: Morning Mail Triage</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -11,7 +12,16 @@
     <header class="header-a">
       <div class="header-top">
         <div>
-          <h1 id="board-title" data-i18n="board.title_default">Nollpost: Morning Mail Triage</h1>
+          <div class="brand-row">
+            <svg class="brand-mark" viewBox="0 0 512 512" width="26" height="26" aria-hidden="true">
+              <g fill="none" stroke="currentColor" stroke-linecap="butt" stroke-linejoin="round">
+                <path stroke-width="36" d="M 343.7 410.3 C 318.9 428.4 290.2 438 261 438 C 173.6 438 105 357.9 105 256 C 105 154.1 172.8 74 259 74 C 341.9 74 407 148.8 407 244 C 407 312 391 352 361 352 C 331 352 319 322 319 256" />
+                <path stroke-width="36" d="M 255 160 C 292.1 160 319 197.4 319 256 C 319 314.6 292.1 352 255 352 C 217.9 352 191 314.6 191 256 C 191 197.4 217.9 160 255 160 Z" />
+                <line stroke-width="26" x1="298.1" y1="182.2" x2="211.9" y2="329.8" />
+              </g>
+            </svg>
+            <h1 id="board-title" data-i18n="board.title_default">Nollpost: Morning Mail Triage</h1>
+          </div>
           <div class="tally-pills" id="tally-pills"></div>
         </div>
         <div class="header-controls">

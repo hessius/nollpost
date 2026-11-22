@@ -1,4 +1,4 @@
-# Nollpost
+# <img src="src/nollpost/static/favicon.svg" width="28" height="28" alt="Nollpost Snabel-noll logo" /> Nollpost
 
 **Nollpost** (*Swedish: "zero mail"*) is a local-first, zero-token multi-inbox triage board for **macOS Apple Mail**, featuring a strictly Archive-only workflow, deterministic RFC 8058 + Playwright unsubscribe runner, and persistent sender preference memory.
 
