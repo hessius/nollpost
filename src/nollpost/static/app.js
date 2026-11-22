@@ -734,7 +734,8 @@
       ? `<br/><strong>Target URL:</strong> <a href="${escapeHtml(entry.final_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(entry.final_url)}</a>`
       : "";
     qs("snap-body").innerHTML = `
-      <div class="preview-box"><strong>Reason:</strong> ${escapeHtml(entry.failure_reason)}<br/><strong>Mail ID:</strong> ${escapeHtml(entry.account)}/${escapeHtml(entry.mailbox)} #${escapeHtml(entry.internal_id)}${finalUrlHtml}<div style="margin-top:8px;"><button class="btn small primary" data-missed-mark-unsub="${entry.id}">Mark as Unsubscribed &amp; Archive</button></div></div>
+      <div class="preview-box"><strong>Reason:</strong> ${escapeHtml(entry.failure_reason)}<br/><strong>Mail ID:</strong> ${escapeHtml(entry.account)}/${escapeHtml(entry.mailbox)} #${escapeHtml(entry.internal_id)}${finalUrlHtml}<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><button class="btn small primary" data-missed-mark-unsub="${entry.id}">Mark as Unsubscribed &amp; Archive</button><button class="btn small secondary" data-missed-copy-report="${entry.id}">Copy Redacted Bug Report</button><span id="missed-copy-status" style="font-size:11px;color:var(--text-secondary);"></span></div></div>
+      <div id="missed-redacted-preview" class="preview-box hidden"></div>
       ${shotHtml}
       <div class="preview-box"><strong>Candidate Links:</strong><br/>${links || "(none)"}</div>
       <div class="preview-box"><strong>Headers:</strong><pre>${escapeHtml(entry.headers_snapshot)}</pre></div>
@@ -843,6 +844,33 @@
       }
       if (t.dataset.missedInspect) {
         showMissedSnapshot(Number(t.dataset.missedInspect));
+        return;
+      }
+      if (t.dataset.missedCopyReport) {
+        const mid = Number(t.dataset.missedCopyReport);
+        const statusEl = qs("missed-copy-status");
+        const prevEl = qs("missed-redacted-preview");
+        let rep;
+        try {
+          rep = await api(`/api/missed/${mid}/export`);
+        } catch (copyErr) {
+          if (statusEl) statusEl.textContent = `Export failed: ${copyErr.message}`;
+          return;
+        }
+        if (prevEl) {
+          prevEl.classList.remove("hidden");
+          prevEl.innerHTML = `<strong>Privacy-Redacted Report (review before posting):</strong><pre style="margin-top:6px;">${escapeHtml(rep.markdown)}</pre>`;
+        }
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(rep.markdown);
+            if (statusEl) statusEl.textContent = "Copied redacted report to clipboard!";
+          } else if (statusEl) {
+            statusEl.textContent = "Clipboard unavailable — copy from the redacted preview below.";
+          }
+        } catch (_clipErr) {
+          if (statusEl) statusEl.textContent = "Clipboard permission denied — copy from the redacted preview below.";
+        }
         return;
       }
       if (t.dataset.missedOpen && isSafeHttpUrl(t.dataset.missedOpen)) {

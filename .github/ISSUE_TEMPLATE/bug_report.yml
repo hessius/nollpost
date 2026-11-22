@@ -1,0 +1,32 @@
+name: Bug Report
+description: Report a crash, Apple Mail bridge issue, or unexpected classification
+title: "[bug] <short summary>"
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead. Remember never to include personal emails or private subjects.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1. Run `nollpost ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor_output
+    attributes:
+      label: Output of `nollpost doctor`
+      description: Run `nollpost doctor` and paste the output here.
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: macOS & Python Version
+      placeholder: "macOS 15.x, Python 3.13, Nollpost 0.1.0"

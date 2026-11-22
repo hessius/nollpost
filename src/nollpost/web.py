@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from nollpost.config import TriageConfig
 from nollpost.executor import BatchExecutor
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
+from nollpost.missed_export import format_missed_bug_report, redact_missed_entry
 from nollpost.models import ClassifiedItem
 from nollpost.patterns_loader import load_unsub_patterns
 from nollpost.playwright_runner import is_public_http_url, run_playwright_action
@@ -519,6 +520,30 @@ def create_app(
             "archived": archived_ok,
             "stats": runtime.store.get_stats(),
             "missed": runtime.store.list_missed_unsubscribes(False),
+        }
+
+    @app.get("/api/missed/{missed_id}/export")
+    async def api_missed_export(missed_id: int) -> dict[str, Any]:
+        entry = runtime.store.get_missed_unsubscribe(missed_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Missed entry not found")
+        acct_emails: list[str] = []
+        snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
+        if snap:
+            acct_emails = [addr for a in snap.accounts for addr in a.addresses]
+        else:
+            try:
+                acct_emails = [
+                    addr
+                    for a in await asyncio.to_thread(runtime.bridge.list_accounts)
+                    for addr in a.addresses
+                ]
+            except Exception:
+                acct_emails = []
+        return {
+            "id": missed_id,
+            "markdown": format_missed_bug_report(entry, account_emails=acct_emails),
+            "entry": redact_missed_entry(entry, account_emails=acct_emails),
         }
 
     @app.post("/api/unsub/mark-succeeded")
