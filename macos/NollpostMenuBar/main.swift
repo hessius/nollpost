@@ -28,6 +28,7 @@ private enum AutomationStatus: Sendable {
 
 private enum ServerState: Equatable {
     case stopped
+    case idleStopped
     case starting
     case running(URL)
     case failed(String)
@@ -36,6 +37,8 @@ private enum ServerState: Equatable {
         switch self {
         case .stopped:
             return "Review Board: Stopped"
+        case .idleStopped:
+            return "Review Board: Stopped (idle)"
         case .starting:
             return "Review Board: Starting..."
         case .running(let url):
@@ -56,6 +59,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var openBoardMenuItem: NSMenuItem!
     private var startStopMenuItem: NSMenuItem!
     private var restartMenuItem: NSMenuItem!
+    private var idleModeMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
 
     private var serverProcess: Process?
@@ -64,6 +68,8 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         didSet { updateMenuState() }
     }
     private var latestAvailableVersion: String?
+    private var idleAutoStopped = false
+    private let idleDisabledKey = "idleAutoStopDisabled"
     private var lineBuffer = ""
     private var recentLogLines: [String] = []
     private var pendingBrowserOpen = false
@@ -198,6 +204,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         logItem.target = self
         menu.addItem(logItem)
 
+        idleModeMenuItem = NSMenuItem(title: "Auto-Stop When Idle (45m)", action: #selector(toggleIdleAutoStop(_:)), keyEquivalent: "")
+        idleModeMenuItem.target = self
+        menu.addItem(idleModeMenuItem)
+
         launchAtLoginMenuItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
         launchAtLoginMenuItem.target = self
         menu.addItem(launchAtLoginMenuItem)
@@ -215,7 +225,50 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        updateIdleAutoStopState()
         updateLaunchAtLoginState()
+    }
+
+    private func isIdleAutoStopEnabled() -> Bool {
+        !UserDefaults.standard.bool(forKey: idleDisabledKey)
+    }
+
+    private func configuredIdleTimeoutMinutes() -> Int {
+        guard let raw = userSectionConfigValue(for: "idle_timeout_minutes"), let mins = Int(raw) else {
+            return 45
+        }
+        return max(0, mins)
+    }
+
+    private func updateIdleAutoStopState() {
+        let enabled = isIdleAutoStopEnabled()
+        let mins = configuredIdleTimeoutMinutes()
+        idleModeMenuItem?.state = (enabled && mins > 0) ? .on : .off
+        if mins <= 0 {
+            idleModeMenuItem?.title = "Auto-Stop When Idle (Off in config.toml)"
+        } else {
+            idleModeMenuItem?.title = "Auto-Stop When Idle (\(mins)m)"
+        }
+    }
+
+    @objc private func toggleIdleAutoStop(_ sender: Any?) {
+        let currentlyEnabled = isIdleAutoStopEnabled()
+        UserDefaults.standard.set(currentlyEnabled, forKey: idleDisabledKey)
+        updateIdleAutoStopState()
+        if let proc = serverProcess, proc.isRunning {
+            let newStateLabel = currentlyEnabled ? "disabled" : "enabled"
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Idle Auto-Stop \(newStateLabel.capitalized)"
+            alert.informativeText = "The Review Board server is currently running. Restart it now to apply this change, or wait until the next start."
+            alert.addButton(withTitle: "Restart Server Now")
+            alert.addButton(withTitle: "Apply Next Start")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                stopServerProcess(waitForExit: true)
+                startServer(openBrowserWhenReady: false)
+            }
+        }
     }
 
     private func updateLaunchAtLoginState() {
@@ -283,7 +336,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             startStopMenuItem?.title = "Stop Server"
             restartMenuItem?.isEnabled = false
             openBoardMenuItem?.title = "Open Review Board (Starting...)"
-        case .stopped, .failed:
+        case .stopped, .idleStopped, .failed:
             startStopMenuItem?.title = "Start Server"
             restartMenuItem?.isEnabled = false
             openBoardMenuItem?.title = "Start & Open Review Board"
@@ -448,7 +501,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .starting:
             pendingBrowserOpen = true
             return
-        case .stopped, .failed:
+        case .stopped, .idleStopped, .failed:
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard await self.promptIfAutomationMissingBeforeLaunch() else { return }
@@ -462,7 +515,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .running, .starting:
             stopServerProcess(waitForExit: true)
             serverState = .stopped
-        case .stopped, .failed:
+        case .stopped, .idleStopped, .failed:
             startServer(openBrowserWhenReady: false)
         }
     }
@@ -481,12 +534,18 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         recentLogLines.removeAll()
         lineBuffer = ""
+        idleAutoStopped = false
         pendingBrowserOpen = openBrowserWhenReady
         serverState = .starting
 
+        var serverArgs = ["serve", "--no-open"]
+        if !isIdleAutoStopEnabled() {
+            serverArgs.append(contentsOf: ["--idle-timeout", "0"])
+        }
+
         let proc = Process()
         proc.executableURL = exe
-        proc.arguments = ["serve", "--no-open"]
+        proc.arguments = serverArgs
         proc.environment = childEnvironment(for: exe)
 
         let pipe = Pipe()
@@ -525,6 +584,9 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         )
                     } else if case .failed = self.serverState {
                         // Keep failure status visible
+                    } else if self.idleAutoStopped || self.recentLogLines.contains(where: { $0.contains("Stopping Nollpost Review Board") && $0.contains("(idle mode)") }) {
+                        self.idleAutoStopped = false
+                        self.serverState = .idleStopped
                     } else {
                         self.serverState = .stopped
                     }
@@ -533,7 +595,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         do {
-            appendLog("\n--- Launching \(exe.path) serve --no-open ---\n")
+            appendLog("\n--- Launching \(exe.path) \(serverArgs.joined(separator: " ")) ---\n")
             try proc.run()
             serverProcess = proc
         } catch {
@@ -557,6 +619,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func parseServerLine(_ line: String) {
+        if line.contains("Stopping Nollpost Review Board") && line.contains("(idle mode)") {
+            idleAutoStopped = true
+            return
+        }
         let prefix = "Review Board URL: "
         guard let range = line.range(of: prefix) else { return }
         let raw = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -738,14 +804,9 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nollpostCfg
     }
 
-    private func isUpdateCheckDisabledByUser() -> Bool {
-        let env = ProcessInfo.processInfo.environment
-        if let flag = env["NOLLPOST_NO_UPDATE_CHECK"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-           ["1", "true", "yes"].contains(flag) {
-            return true
-        }
+    private func userSectionConfigValue(for targetKey: String) -> String? {
         guard let text = try? String(contentsOfFile: resolvedConfigPath(), encoding: .utf8) else {
-            return false
+            return nil
         }
         var currentSection = ""
         var inMultiline = false
@@ -767,11 +828,23 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard currentSection == "user" else { continue }
             let uncommented = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
                 .trimmingCharacters(in: .whitespaces)
-            if uncommented.range(of: #"^check_updates\s*=\s*false\b"#, options: .regularExpression) != nil {
-                return true
+            guard let eqIdx = uncommented.firstIndex(of: "=") else { continue }
+            let key = String(uncommented[..<eqIdx]).trimmingCharacters(in: .whitespaces)
+            if key == targetKey {
+                return String(uncommented[uncommented.index(after: eqIdx)...])
+                    .trimmingCharacters(in: .whitespaces)
             }
         }
-        return false
+        return nil
+    }
+
+    private func isUpdateCheckDisabledByUser() -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        if let flag = env["NOLLPOST_NO_UPDATE_CHECK"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           ["1", "true", "yes"].contains(flag) {
+            return true
+        }
+        return userSectionConfigValue(for: "check_updates")?.lowercased() == "false"
     }
 
     private nonisolated static func parseFormulaVersion(_ formulaText: String) -> String? {

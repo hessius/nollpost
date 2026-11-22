@@ -64,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
     serve_p.add_argument("--port", type=int, default=0, help="Port to bind (default: random free port)")
     serve_p.add_argument("--no-open", action="store_true", help="Do not auto-open browser")
     serve_p.add_argument("--no-preload", action="store_true", help="Defer initial Mail scan until browser opens")
+    serve_p.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=None,
+        help="Auto-stop server after N minutes of inactivity (0 disables; default from config.toml: 45)",
+    )
 
     sub.add_parser("stats", help="Show lifetime triage tallies")
 
@@ -230,9 +236,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "serve":
+        if args.idle_timeout is not None and args.idle_timeout < 0:
+            parser.error("--idle-timeout must be >= 0 (use 0 to disable)")
         port = args.port or _find_free_port("127.0.0.1")
         token = secrets.token_urlsafe(24)
         url = f"http://127.0.0.1:{port}/?key={token}"
+        idle_secs: float | None = None if args.idle_timeout is None else float(args.idle_timeout) * 60.0
         app, _ = create_app(
             config,
             store,
@@ -240,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             token=token,
             preload=not args.no_preload,
             open_browser_url=None if args.no_open else url,
+            idle_timeout_seconds=idle_secs,
         )
         if not args.no_open:
             print(

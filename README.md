@@ -38,7 +38,7 @@ brew tap hessius/tap
 brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
 
-# Optional: open the menu-bar launcher (starts Review Board, checks Mail permissions, supports Open at Login)
+# Optional: open the menu-bar launcher (starts Review Board on demand, checks Mail permissions, supports Open at Login and Auto-Stop When Idle)
 open "$(brew --prefix nollpost)/Nollpost.app"
 ```
 
@@ -88,7 +88,7 @@ nollpost stats
 nollpost missed
 ```
 
-On first run, Nollpost creates `~/.config/nollpost/config.toml` where you can customize scan limits, UI language (`ui_language = ""` auto-detects from your browser or supports `"en"` / `"sv"`, also configurable in **Settings**), per-account Archive folder overrides, wanted domains, and billing keywords.
+On first run, Nollpost creates `~/.config/nollpost/config.toml` where you can customize scan limits, auto-idle server shutdown (`idle_timeout_minutes = 45` by default, or `0` / `nollpost serve --idle-timeout 0` to keep running continuously), UI language (`ui_language = ""` auto-detects from your browser or supports `"en"` / `"sv"`, also configurable in **Settings**), per-account Archive folder overrides, wanted domains, and billing keywords.
 
 ## Gmail Archiving Strategies
 
