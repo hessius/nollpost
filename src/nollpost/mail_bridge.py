@@ -231,9 +231,9 @@ def mail_automation_lock(timeout: float = LOCK_WAIT_SECONDS) -> Iterator[None]:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except BlockingIOError:
+            except BlockingIOError as err:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(f"Mail automation lock busy after {timeout}s")
+                    raise TimeoutError(f"Mail automation lock busy after {timeout}s") from err
                 time.sleep(0.1)
         try:
             yield
@@ -253,10 +253,10 @@ def run_osascript(script: str, timeout: int = 120) -> str:
         )
         try:
             stdout, stderr = proc.communicate(input=script.encode("utf-8"), timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as err:
             proc.kill()
             proc.wait()
-            raise TimeoutError(f"osascript timed out after {timeout}s")
+            raise TimeoutError(f"osascript timed out after {timeout}s") from err
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"AppleScript error: {err}")

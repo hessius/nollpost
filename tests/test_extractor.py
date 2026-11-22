@@ -139,7 +139,7 @@ def test_unknown_charset_and_many_links_keep_footer():
     info = extract_email_info(raw, "shop.se")
     assert info.unsub_target is not None
     assert info.unsub_target.url == "https://shop.se/optout"
-    assert any(l["href"] == "https://shop.se/optout" for l in info.candidate_links)
+    assert any(link["href"] == "https://shop.se/optout" for link in info.candidate_links)
 
 
 def test_pertinent_url_prefers_meticulous_blog_patreon_post_topic_and_open_in_browser():
