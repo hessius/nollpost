@@ -2,7 +2,7 @@ class Nollpost < Formula
   desc "Zero-token multi-inbox Apple Mail triage board and Playwright unsubscribe runner"
   homepage "https://github.com/Hessius/nollpost"
   url "https://github.com/Hessius/nollpost/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "9bd3c5edcc0d0bc955ae63d879e3a28358c0be449b5823a4e120343c297ad355"
   license "MIT"
   head "https://github.com/Hessius/nollpost.git", branch: "main"
 
