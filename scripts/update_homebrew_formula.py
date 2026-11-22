@@ -45,7 +45,7 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
     target_arch = Hardware::CPU.intel? ? "x86_64" : "arm64"
     system "/usr/bin/swiftc", "-O", "-parse-as-library",
            "-target", "#{target_arch}-apple-macos13.0",
-           "-framework", "Cocoa", "-framework", "ApplicationServices",
+           "-framework", "Cocoa", "-framework", "ApplicationServices", "-framework", "ServiceManagement",
            (buildpath/"macos/NollpostMenuBar/main.swift").to_s,
            "-o", (app_contents/"MacOS/Nollpost").to_s
 

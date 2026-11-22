@@ -29,20 +29,22 @@
 
 ## Installation
 
-### Homebrew (macOS Apple Silicon & Intel)
+### Recommended: Homebrew (macOS Apple Silicon & Intel)
+
+Homebrew is the **recommended** installation method: it manages the isolated Python 3.13 environment, Playwright Chromium browser binaries, and compiles the native `Nollpost.app` menu-bar launcher in one command.
 
 ```bash
 brew tap hessius/tap
 brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
 
-# Optional: open the menu-bar launcher (starts Review Board & checks Mail permissions)
+# Optional: open the menu-bar launcher (starts Review Board, checks Mail permissions, supports Open at Login)
 open "$(brew --prefix nollpost)/Nollpost.app"
 ```
 
 See [docs/macos-distribution.md](docs/macos-distribution.md) for Homebrew tap release automation and update-check details.
 
-### `uv` or `pipx`
+### CLI-Only Alternatives (`uv` or `pipx`)
 
 ```bash
 uv tool install git+https://github.com/Hessius/nollpost.git

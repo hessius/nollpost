@@ -1,6 +1,7 @@
 import ApplicationServices
 import Cocoa
 import Foundation
+import ServiceManagement
 
 private enum AutomationStatus: Sendable {
     case granted
@@ -48,13 +49,14 @@ private enum ServerState: Equatable {
 
 @main
 @MainActor
-final class NollpostMenuApp: NSObject, NSApplicationDelegate {
+final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var stateMenuItem: NSMenuItem!
     private var updateNoticeMenuItem: NSMenuItem!
     private var openBoardMenuItem: NSMenuItem!
     private var startStopMenuItem: NSMenuItem!
     private var restartMenuItem: NSMenuItem!
+    private var launchAtLoginMenuItem: NSMenuItem!
 
     private var serverProcess: Process?
     private var outputPipe: Pipe?
@@ -80,6 +82,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         buildStatusMenu()
         openLogFile()
         updateMenuState()
+        updateLaunchAtLoginState()
         if !isUpdateCheckDisabledByUser() {
             checkForUpdates(interactive: false)
         }
@@ -195,6 +198,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         logItem.target = self
         menu.addItem(logItem)
 
+        launchAtLoginMenuItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
+        launchAtLoginMenuItem.target = self
+        menu.addItem(launchAtLoginMenuItem)
+
         let updateCheckItem = NSMenuItem(title: "Check for Updates...", action: #selector(checkForUpdatesManually(_:)), keyEquivalent: "u")
         updateCheckItem.target = self
         menu.addItem(updateCheckItem)
@@ -203,7 +210,66 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
 
+        menu.delegate = self
         statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        updateLaunchAtLoginState()
+    }
+
+    private func updateLaunchAtLoginState() {
+        let status = SMAppService.mainApp.status
+        switch status {
+        case .enabled:
+            launchAtLoginMenuItem?.state = .on
+            launchAtLoginMenuItem?.title = "Open at Login"
+        case .requiresApproval:
+            launchAtLoginMenuItem?.state = .on
+            launchAtLoginMenuItem?.title = "Open at Login (Approval Required)"
+        case .notRegistered, .notFound:
+            launchAtLoginMenuItem?.state = .off
+            launchAtLoginMenuItem?.title = "Open at Login"
+        @unknown default:
+            launchAtLoginMenuItem?.state = .off
+            launchAtLoginMenuItem?.title = "Open at Login"
+        }
+    }
+
+    @objc private func toggleLaunchAtLogin(_ sender: Any?) {
+        let currentStatus = SMAppService.mainApp.status
+        do {
+            if currentStatus == .enabled || currentStatus == .requiresApproval {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+                if SMAppService.mainApp.status == .requiresApproval {
+                    promptOpenLoginItemsSettings(
+                        title: "Approve Nollpost in Login Items",
+                        message: "macOS requires your approval in System Settings -> General -> Login Items to open Nollpost automatically at login."
+                    )
+                }
+            }
+        } catch {
+            promptOpenLoginItemsSettings(
+                title: "Could Not Update Login Item",
+                message: "\(error.localizedDescription)\n\nIf Nollpost.app is running from Homebrew Cellar, copying it to /Applications (`ditto \"$(brew --prefix nollpost)/Nollpost.app\" /Applications/Nollpost.app`) or adding it in System Settings -> General -> Login Items is recommended."
+            )
+        }
+        updateLaunchAtLoginState()
+    }
+
+    private func promptOpenLoginItemsSettings(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Open Login Items Settings")
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            SMAppService.openSystemSettingsLoginItems()
+        }
     }
 
     private func updateMenuState() {

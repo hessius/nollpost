@@ -41,6 +41,8 @@ def _swift_compile(source: Path, target_triple: str, out_bin: Path) -> None:
         "Cocoa",
         "-framework",
         "ApplicationServices",
+        "-framework",
+        "ServiceManagement",
         str(source),
         "-o",
         str(out_bin),
