@@ -642,6 +642,10 @@ def create_app(
                     if not (i.header.account == account and i.header.internal_id == str(internal_id))
                 ]
 
+        rfc_msg_id = (
+            (target_item.header.rfc_message_id if target_item else "")
+            or (str(entry.get("rfc_message_id") or "") if entry else "")
+        )
         runtime.store.log_action(
             run_id="manual",
             account=account or "unknown",
@@ -652,6 +656,7 @@ def create_app(
             status="ok",
             detail=f"{note}{' & archived to ' + arch_box if archived_ok else ''}",
             archive_mailbox=arch_box if archived_ok else "",
+            rfc_message_id=rfc_msg_id,
         )
         return {
             "ok": True,
@@ -700,64 +705,64 @@ def create_app(
 
     @app.post("/api/audit-log/{entry_id}/undo")
     async def api_undo_archive(entry_id: int) -> dict[str, Any]:
-        entry = runtime.store.get_action_log_entry(entry_id)
-        if not entry:
-            raise HTTPException(status_code=404, detail="Audit log entry not found")
-        if entry.get("undone_at"):
-            raise HTTPException(status_code=400, detail="Archive action was already undone")
-        if not entry.get("can_undo_archive"):
-            raise HTTPException(status_code=400, detail="Only completed archive actions can be undone")
-
-        account = str(entry.get("account") or "").strip()
-        if not account:
-            raise HTTPException(status_code=400, detail="Missing account for audit entry")
-
-        snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
-        accounts_list = snap.accounts if snap else []
-        if not accounts_list:
-            try:
-                accounts_list = await asyncio.to_thread(runtime.bridge.list_accounts)
-            except Exception:
-                accounts_list = []
-        acct_archive_map = {a.name: a.archive_mailbox for a in accounts_list}
-        acct_inbox_map = {a.name: a.inbox_mailbox for a in accounts_list}
-
-        from_mailbox = (
-            str(entry.get("archive_mailbox") or "").strip()
-            or acct_archive_map.get(account)
-            or runtime.config.archive_map.get(account)
-            or "Archive"
-        )
-        inbox_mailbox = acct_inbox_map.get(account, "INBOX")
-
-        try:
-            restored = await asyncio.to_thread(
-                runtime.bridge.restore_to_inbox,
-                account,
-                from_mailbox,
-                str(entry.get("internal_id") or ""),
-                inbox_mailbox=inbox_mailbox,
-                rfc_message_id=str(entry.get("rfc_message_id") or ""),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Mail restore failed: {exc}") from exc
-
-        if not restored:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Could not find message #{entry.get('internal_id')} in {account}/{from_mailbox}",
-            )
-
-        runtime.store.mark_action_undone(entry_id, detail_note=f"Restored to {account}/{inbox_mailbox}")
         async with runtime.scan_lock:
+            entry = runtime.store.get_action_log_entry(entry_id)
+            if not entry:
+                raise HTTPException(status_code=404, detail="Audit log entry not found")
+            if entry.get("undone_at"):
+                raise HTTPException(status_code=400, detail="Archive action was already undone")
+            if not entry.get("can_undo_archive"):
+                raise HTTPException(status_code=400, detail="Only completed archive actions can be undone")
+
+            account = str(entry.get("account") or "").strip()
+            if not account:
+                raise HTTPException(status_code=400, detail="Missing account for audit entry")
+
+            snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
+            accounts_list = snap.accounts if snap else []
+            if not accounts_list:
+                try:
+                    accounts_list = await asyncio.to_thread(runtime.bridge.list_accounts)
+                except Exception:
+                    accounts_list = []
+            acct_archive_map = {a.name: a.archive_mailbox for a in accounts_list}
+            acct_inbox_map = {a.name: a.inbox_mailbox for a in accounts_list}
+
+            from_mailbox = (
+                str(entry.get("archive_mailbox") or "").strip()
+                or acct_archive_map.get(account)
+                or runtime.config.archive_map.get(account)
+                or "Archive"
+            )
+            inbox_mailbox = acct_inbox_map.get(account, "INBOX")
+
+            try:
+                restored = await asyncio.to_thread(
+                    runtime.bridge.restore_to_inbox,
+                    account,
+                    from_mailbox,
+                    str(entry.get("internal_id") or ""),
+                    inbox_mailbox=inbox_mailbox,
+                    rfc_message_id=str(entry.get("rfc_message_id") or ""),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Mail restore failed: {exc}") from exc
+
+            if not restored:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Could not find message #{entry.get('internal_id')} in {account}/{from_mailbox}",
+                )
+
+            runtime.store.mark_action_undone(entry_id, detail_note=f"Restored to {account}/{inbox_mailbox}")
             runtime.snapshots.clear()
-        return {
-            "ok": True,
-            "entry_id": entry_id,
-            "restored_to": f"{account}/{inbox_mailbox}",
-        }
+            return {
+                "ok": True,
+                "entry_id": entry_id,
+                "restored_to": f"{account}/{inbox_mailbox}",
+            }
 
     @app.post("/api/unsub/mark-succeeded")
     async def api_unsub_mark_succeeded(req: MarkUnsubscribedRequest) -> dict[str, Any]:

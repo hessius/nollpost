@@ -35,7 +35,9 @@ def is_action_undoable(row: dict[str, Any]) -> bool:
     act = str(row.get("action") or "")
     if act in ARCHIVE_LOG_ACTIONS:
         return True
-    if act == "mark_unsubscribed" and "archived to " in str(row.get("detail") or "").lower():
+    if act == "mark_unsubscribed" and (
+        bool(row.get("archive_mailbox")) or "& archived to " in str(row.get("detail") or "").lower()
+    ):
         return True
     return False
 
@@ -683,69 +685,88 @@ class TriageStore:
         search: str = "",
         limit: int = 200,
     ) -> dict[str, Any]:
-        """Return recent action_log items (filtered) plus batch run summaries."""
+        """Return recent action_log items (filtered in SQL) plus batch run summaries."""
         capped = max(1, min(500, int(limit)))
         needle = search.strip().lower()
         status_filt = status.strip().lower()
         run_filt = run_id.strip()
 
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if status_filt and status_filt != "all":
+            where_clauses.append("lower(status) = ?")
+            params.append(status_filt)
+        if run_filt:
+            where_clauses.append("run_id = ?")
+            params.append(run_filt)
+        if needle:
+            escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like_pat = f"%{escaped}%"
+            where_clauses.append(
+                "(lower(sender) LIKE ? ESCAPE '\\' OR lower(subject) LIKE ? ESCAPE '\\' "
+                "OR lower(action) LIKE ? ESCAPE '\\' OR lower(detail) LIKE ? ESCAPE '\\' "
+                "OR lower(account) LIKE ? ESCAPE '\\' OR lower(run_id) LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like_pat] * 6)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
         with self._conn() as conn:
-            all_rows = [
-                dict(r)
-                for r in conn.execute(
-                    "SELECT * FROM action_log ORDER BY id DESC LIMIT 1000"
-                ).fetchall()
-            ]
+            item_rows = conn.execute(
+                f"SELECT * FROM action_log {where_sql} ORDER BY id DESC LIMIT ?",
+                [*params, capped],
+            ).fetchall()
+            run_rows = conn.execute(
+                """
+                SELECT
+                    run_id,
+                    MAX(created_at) AS created_at,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN status = 'blocked_captcha' THEN 1 ELSE 0 END) AS blocked_captcha,
+                    SUM(CASE WHEN status = 'drafted' THEN 1 ELSE 0 END) AS drafted
+                FROM action_log
+                GROUP BY run_id
+                ORDER BY MAX(id) DESC
+                LIMIT 50
+                """
+            ).fetchall()
 
-        runs_map: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
-        for row in all_rows:
-            rid = str(row.get("run_id") or "")
-            if rid not in runs_map:
-                runs_map[rid] = {
-                    "run_id": rid,
-                    "created_at": row["created_at"],
-                    "total": 0,
-                    "ok": 0,
-                    "failed": 0,
-                    "blocked_captcha": 0,
-                    "drafted": 0,
-                }
-            rs = runs_map[rid]
-            rs["total"] += 1
-            st = str(row.get("status") or "")
-            if st in ("ok", "failed", "blocked_captcha", "drafted"):
-                rs[st] += 1
+        for r in item_rows:
+            d = dict(r)
+            d["can_undo_archive"] = is_action_undoable(d)
+            items.append(d)
 
-            if status_filt and status_filt != "all" and st.lower() != status_filt:
-                continue
-            if run_filt and rid != run_filt:
-                continue
-            if needle:
-                hay = f"{row['sender']} {row['subject']} {row['action']} {row['detail']} {row['account']} {rid}".lower()
-                if needle not in hay:
-                    continue
-            if len(items) < capped:
-                row["can_undo_archive"] = is_action_undoable(row)
-                items.append(row)
+        runs = [
+            {
+                "run_id": r["run_id"],
+                "created_at": r["created_at"],
+                "total": int(r["total"] or 0),
+                "ok": int(r["ok"] or 0),
+                "failed": int(r["failed"] or 0),
+                "blocked_captcha": int(r["blocked_captcha"] or 0),
+                "drafted": int(r["drafted"] or 0),
+            }
+            for r in run_rows
+        ]
+        return {"items": items, "runs": runs}
 
-        return {
-            "items": items,
-            "runs": list(runs_map.values())[:50],
-        }
-
-    def mark_action_undone(self, entry_id: int, detail_note: str = "Restored to INBOX") -> None:
+    def mark_action_undone(self, entry_id: int, detail_note: str = "Restored to INBOX") -> bool:
         now = utc_now_iso()
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM action_log WHERE id = ?", (entry_id,)).fetchone()
-            if not row:
-                return
+            if not row or row["undone_at"]:
+                return False
             existing_detail = str(row["detail"] or "").strip()
             new_detail = f"{existing_detail} [{detail_note}]" if existing_detail else detail_note
-            conn.execute(
-                "UPDATE action_log SET undone_at = ?, detail = ? WHERE id = ?",
+            cur = conn.execute(
+                "UPDATE action_log SET undone_at = ?, detail = ? WHERE id = ? AND undone_at IS NULL",
                 (now, new_detail, entry_id),
             )
+            if cur.rowcount == 0:
+                return False
             conn.execute(
                 """
                 INSERT INTO action_log (
@@ -767,6 +788,7 @@ class TriageStore:
                     now,
                 ),
             )
+            return True
 
     def get_cached_extraction(self, cache_key: str) -> Optional[dict[str, Any]]:
         with self._conn() as conn:

@@ -1083,6 +1083,9 @@
     if (seq !== state.auditSeq) return;
     state.auditItems = res.items || [];
     state.auditRuns = res.runs || [];
+    if (state.auditRunId && !state.auditRuns.some((r) => r.run_id === state.auditRunId)) {
+      state.auditRunId = "";
+    }
     if (rowsOnly && qs("audit-tbody")) {
       renderAuditLogRowsOnly();
     } else {
@@ -1193,6 +1196,7 @@
   }
 
   async function openAuditLogModal() {
+    state.auditRunId = "";
     await refreshAuditLogData();
   }
 
@@ -1266,6 +1270,7 @@
         return;
       }
       if (t.dataset.auditUndo) {
+        const undoTriggerBtn = t instanceof HTMLButtonElement ? t : null;
         const entryId = Number(t.dataset.auditUndo);
         const row = (state.auditItems || []).find((r) => r.id === entryId);
         qs("modal-title").textContent = "Confirm Undo Archive";
@@ -1276,23 +1281,38 @@
         qs("confirm-modal").classList.remove("hidden");
         state.confirmCallback = async () => {
           qs("confirm-modal").classList.add("hidden");
+          if (undoTriggerBtn) undoTriggerBtn.disabled = true;
           const statusEl = qs("audit-status");
+          let resp;
           try {
-            const resp = await api(`/api/audit-log/${entryId}/undo`, { method: "POST" });
-            await refreshAuditLogData({ rowsOnly: true });
-            const nextEl = qs("audit-status");
-            if (nextEl) {
-              nextEl.className = "modal-status ok";
-              nextEl.textContent = `Restored to ${resp.restored_to || "INBOX"}.`;
-            }
-            await loadState(false);
+            resp = await api(`/api/audit-log/${entryId}/undo`, { method: "POST" });
           } catch (undoErr) {
+            if (undoTriggerBtn) undoTriggerBtn.disabled = false;
             if (statusEl) {
               statusEl.className = "modal-status err";
               statusEl.textContent = `Undo failed: ${undoErr.message}`;
             } else {
               showError(undoErr.message);
             }
+            return;
+          }
+          if (row) {
+            for (const item of state.data?.items || []) {
+              if (item.header?.account === row.account && String(item.header?.internal_id) === String(row.internal_id)) {
+                state.actionsByUid.delete(item.uid);
+              }
+            }
+          }
+          await refreshAuditLogData();
+          const nextEl = qs("audit-status");
+          if (nextEl) {
+            nextEl.className = "modal-status ok";
+            nextEl.textContent = `Restored to ${resp.restored_to || "INBOX"}.`;
+          }
+          try {
+            await loadState(false);
+          } catch (scanErr) {
+            showError(scanErr.message);
           }
         };
         return;

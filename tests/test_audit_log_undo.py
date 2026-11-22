@@ -193,13 +193,34 @@ def test_store_action_log_migration_filtering_and_undo(tmp_path: Path):
     assert [i["internal_id"] for i in failed_only["items"]] == ["56"]
 
     store.mark_action_undone(1, detail_note="Restored to iCloud/INBOX")
+    assert store.mark_action_undone(1, detail_note="Duplicate") is False
     updated = store.get_action_log_entry(1)
     assert updated is not None
     assert updated["can_undo_archive"] is False
     assert updated["undone_at"] is not None
     assert "Restored to iCloud/INBOX" in updated["detail"]
-    # An undo_archive audit row is appended
-    assert store.list_action_log(search="undo_archive")["items"][0]["action"] == "undo_archive"
+    assert "Duplicate" not in updated["detail"]
+    # An undo_archive audit row is appended once
+    undo_rows = store.list_action_log(search="undo_archive")["items"]
+    assert len(undo_rows) == 1
+    assert undo_rows[0]["action"] == "undo_archive"
+
+    # Insert >1000 filler rows and verify older entries remain searchable and filterable in SQL
+    for idx in range(1050):
+        store.log_action(
+            run_id="bulk-run",
+            account="iCloud",
+            internal_id=str(1000 + idx),
+            sender="Bulk <b@example.com>",
+            subject=f"Filler {idx}",
+            action="mark_read",
+            status="ok",
+        )
+    old_found = store.list_action_log(run_id="old-run", search="Old Promo")
+    assert len(old_found["items"]) == 1
+    assert old_found["items"][0]["id"] == 1
+    bulk_summary = next(r for r in old_found["runs"] if r["run_id"] == "bulk-run")
+    assert bulk_summary["total"] == 1050
 
 
 def test_mail_bridge_restore_to_inbox_guards_trash_and_builds_applescript(monkeypatch):
@@ -309,6 +330,17 @@ def test_web_audit_log_and_one_click_undo_archive(tmp_path: Path, monkeypatch):
         # Subsequent /api/state sees #10 back in Inbox
         st1 = client.get("/api/state", headers={"X-Triage-Key": token}).json()
         assert any(i["header"]["internal_id"] == "10" for i in st1["items"])
+
+        # mark-succeeded records rfc_message_id so manual archive + undo also preserves Message-ID
+        mark_resp = client.post(
+            "/api/unsub/mark-succeeded",
+            headers={"X-Triage-Key": token},
+            json={"uid": "iCloud:INBOX:11", "archive": True},
+        )
+        assert mark_resp.status_code == 200
+        manual_audit = client.get("/api/audit-log?run_id=manual", headers={"X-Triage-Key": token}).json()
+        assert manual_audit["items"][0]["rfc_message_id"] == "<m11@creator.example>"
+        assert manual_audit["items"][0]["can_undo_archive"] is True
 
         html = client.get(f"/?key={token}").text
         app_js = client.get("/static/app.js").text
