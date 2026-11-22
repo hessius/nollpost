@@ -54,6 +54,7 @@ class ScanSnapshot:
     stats: dict[str, int]
     briefing: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    consulting_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class ScanSnapshot:
             "stats": self.stats,
             "briefing": self.briefing,
             "warnings": self.warnings,
+            "consulting_enabled": self.consulting_enabled,
         }
 
 
@@ -275,4 +277,5 @@ def run_scan(
         stats=store.get_stats(),
         briefing=_build_briefing(accounts, items),
         warnings=warnings,
+        consulting_enabled=config.consulting_enabled,
     )

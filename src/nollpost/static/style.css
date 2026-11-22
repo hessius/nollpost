@@ -196,8 +196,12 @@ h1 { font-size: 16px; font-weight: 700; margin-bottom: 5px; }
   background: var(--bg-tertiary);
   display: inline-block;
 }
-.acct.icloud { color: #0a84ff; }
-.acct.google { color: #28a745; }
+.acct-c0 { color: #0a84ff; }
+.acct-c1 { color: #28a745; }
+.acct-c2 { color: #af52de; }
+.acct-c3 { color: #ff9500; }
+.acct-c4 { color: #00a8a8; }
+.acct-c5 { color: #e05a47; }
 
 .sub-meta {
   font-size: 11px;
