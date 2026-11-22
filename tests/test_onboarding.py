@@ -132,7 +132,7 @@ def test_setup_wizard_rejects_trash_and_writes_valid_config(tmp_path: Path, monk
 
 
 def test_cli_doctor_json_exit_code(tmp_path: Path, monkeypatch, capsys):
-    _setup_env(tmp_path, monkeypatch)
+    cfg_path = _setup_env(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "AppleMailBridge", lambda **_kw: _StubBridge(error=RuntimeError("denied (-1743)")))
     monkeypatch.setattr("nollpost.onboarding._check_chromium_installed", lambda: (False, "missing"))
     rc = cli.main(["doctor", "--json"])
@@ -140,3 +140,69 @@ def test_cli_doctor_json_exit_code(tmp_path: Path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert any(c["status"] == "fail" for c in payload["checks"])
+    # doctor must not create config.toml or state.db
+    assert not cfg_path.exists()
+    assert not (tmp_path / "data" / "state.db").exists()
+
+    # Invalid config.toml must report a structured 'config' fail check rather than crashing
+    cfg_path.write_text("[accounts]\ngmail_archive_strategy = 'bad'\n", encoding="utf-8")
+    rc_bad = cli.main(["doctor", "--json"])
+    assert rc_bad == 1
+    bad_payload = json.loads(capsys.readouterr().out)
+    assert any(c["name"] == "config" and c["status"] == "fail" for c in bad_payload["checks"])
+
+
+def test_setup_sanitizes_trash_archive_map_migrates_legacy_consulting_and_handles_eof(tmp_path: Path, monkeypatch):
+    import tomllib
+    from nollpost.onboarding import _toml_str
+
+    escaped = _toml_str('line1\nline2\t"q"\x00\x1b\\')
+    assert tomllib.loads(f"v = {escaped}")["v"] == 'line1\nline2\t"q"\x00\x1b\\'
+
+    cfg_path = _setup_env(tmp_path, monkeypatch)
+    cfg_path.write_text(
+        """
+[user]
+consulting_decline_boilerplate = "Custom legacy boilerplate"
+
+[accounts.archive_map]
+Google = "Trash"
+Stale = "Deleted Messages"
+
+[profile]
+consulting_networks = ["guidepointglobal.com"]
+consulting_match_keywords = ["medtech"]
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(ensure_files=False)
+    bridge = _StubBridge([AccountInfo("Google", ["b@example.com"], "INBOX", "[Gmail]/All Mail")])
+
+    # EOF mid-prompt must abort cleanly without overwriting config
+    rc_eof = run_setup(
+        cfg,
+        bridge,
+        skip_browser=True,
+        input_fn=lambda _p: (_ for _ in ()).throw(EOFError()),
+        output_fn=lambda _s: None,
+    )
+    assert rc_eof == 1
+    assert "Trash" in cfg_path.read_text(encoding="utf-8")
+
+    # Non-interactive --yes strips forbidden archive_map entries and migrates legacy consulting keys
+    out: list[str] = []
+    rc_yes = run_setup(
+        cfg,
+        bridge,
+        yes=True,
+        skip_browser=True,
+        output_fn=out.append,
+    )
+    assert rc_yes == 0
+    reloaded = load_config(ensure_files=False)
+    assert reloaded.consulting_enabled is True
+    assert reloaded.consulting_networks == ["guidepointglobal.com"]
+    assert reloaded.consulting_decline_boilerplate == "Custom legacy boilerplate"
+    assert reloaded.archive_map.get("Google") == "[Gmail]/All Mail"
+    assert "Stale" not in reloaded.archive_map
+    assert "Trash" not in cfg_path.read_text(encoding="utf-8")
