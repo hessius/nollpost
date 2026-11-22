@@ -49,6 +49,7 @@ def test_list_accounts_resolves_gmail_container_archive(monkeypatch):
     assert by_name["Google"].sent_mailbox == "[Gmail]/Skickat"
     assert 'resolveMailbox(targetAccount, "[Gmail]/All e-post")' in mailbox_ref_applescript("[Gmail]/All e-post")
     assert is_gmail_all_mail_destination("[Gmail]/All e-post") is True
+    assert is_gmail_all_mail_destination("[Gmail]/Arkiv") is True
     assert is_gmail_all_mail_destination("Archive") is False
 
 
@@ -126,6 +127,8 @@ def test_gmail_ui_archive_verifies_target_and_stops_on_surprise(monkeypatch):
     assert moved == ["10", "11"] and order == ["10", "11"]
     assert all("delete " not in s.lower() and "Papperskorgen" not in s for s in scripts)
     assert all('if subj is "" then return "ABORT:' in s and "close front window" in s for s in scripts)
+    ui_scripts = [s for s in scripts if "front window" in s]
+    assert ui_scripts and all("toolbar 1 of targetWin" in s and "AXFocusedWindow" in s and "click mbi" in s for s in ui_scripts)
 
     # Scenario B: clicking archives a DIFFERENT message ("12") -> target not reported, batch stops
     inbox.clear()

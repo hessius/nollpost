@@ -92,9 +92,9 @@ On first run, Nollpost creates `~/.config/nollpost/config.toml` where you can cu
 
 ## Gmail Archiving Strategies
 
-Moving a message directly to `[Gmail]/All Mail` via Apple Mail AppleScript does not strip Gmail's `Inbox` label over IMAP. Nollpost supports three strategies under `[accounts]` in `config.toml`:
+Moving a message directly to `[Gmail]/All Mail` (or `[Gmail]/All e-post` in Swedish Gmail IMAP, shown in Apple Mail's sidebar as **Arkiv**) via Apple Mail AppleScript does not strip Gmail's `Inbox` label over IMAP. Nollpost supports three strategies under `[accounts]` in `config.toml`:
 
-1. **`gmail_archive_strategy = "ui_menu"` (Default):** Opens the message in Apple Mail and clicks Mail's native **Archive** menu item, verifying that only the target message left `INBOX`. Requires macOS **Accessibility** permission.
+1. **`gmail_archive_strategy = "ui_menu"` (Default):** Opens the target message in Apple Mail and clicks Mail's native **Archive** (`Arkivera`) toolbar button (with validated **Message -> Archive** menu fallback), avoiding focus stealing when Mail already has a visible window and verifying that only the target message left `INBOX`. Requires macOS **Accessibility** permission.
 2. **`gmail_archive_strategy = "two_hop"`:** Stages messages through a temporary `_ArchiveTmp` folder and flushes them to All Mail.
 3. **`gmail_archive_strategy = "tag_staging"` (Fastest headless option):** Moves messages to a Gmail label `_ArchiveTmp` so a tiny Google Apps Script on your own Google account archives them cleanly in the background (no UI window flashing or Accessibility permission needed).
 

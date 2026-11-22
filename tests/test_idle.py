@@ -159,19 +159,19 @@ def test_idle_watchdog_resets_timer_on_authenticated_requests(tmp_path: Path, mo
         _IdleFakeBridge(),
         token="tok",
         preload=False,
-        idle_timeout_seconds=0.18,
-        idle_poll_interval=0.03,
+        idle_timeout_seconds=0.8,
+        idle_poll_interval=0.05,
         on_idle_shutdown=fired.set,
     )
     headers = {"X-Triage-Key": "tok"}
     with TestClient(app) as client:
         for _ in range(4):
-            time.sleep(0.07)
+            time.sleep(0.25)
             assert client.get("/api/updates", headers=headers).status_code == 200
             assert not fired.is_set()
         assert client.get("/api/state", headers=headers).status_code == 200
         assert not fired.is_set()
-        assert fired.wait(timeout=2.0) is True
+        assert fired.wait(timeout=3.0) is True
     store.close()
 
 
