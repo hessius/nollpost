@@ -547,7 +547,7 @@ def run_setup(
         )
         want_app = False
         if app_bundle_available:
-            already_installed = _has_installed_macos_app() if app_installer is None else False
+            already_installed = _has_installed_macos_app()
             if yes:
                 want_app = already_installed
             elif already_installed:

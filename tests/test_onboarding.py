@@ -363,3 +363,33 @@ def test_locate_and_install_macos_app_bundle_with_fallback_and_cli(tmp_path: Pat
     assert f"Installed menu-bar app: {fallback_dest}" in accept_text
     assert f"Launched {fallback_dest}" in accept_text
     assert opened_bundles == [fallback_dest]
+
+    # When already installed, empty Enter accepts [Y/n] refresh & launches
+    monkeypatch.setattr("nollpost.onboarding._has_installed_macos_app", lambda: True)
+    refresh_answers = iter(["n", "n", "", ""])
+    refresh_out: list[str] = []
+    opened_bundles.clear()
+    assert (
+        run_setup(
+            cfg,
+            bridge,
+            skip_browser=True,
+            input_fn=lambda _p: next(refresh_answers),
+            output_fn=refresh_out.append,
+            app_installer=lambda: fallback_dest,
+            app_opener=lambda p: opened_bundles.append(p) or 0,
+        )
+        == 0
+    )
+    assert opened_bundles == [fallback_dest]
+
+    # --skip-app bypasses prompt/install even if already installed
+    skipped_calls: list[bool] = []
+    monkeypatch.setattr(cli, "AppleMailBridge", lambda **_kw: _StubBridge([]))
+    monkeypatch.setattr(
+        cli,
+        "run_setup",
+        lambda *_a, skip_app=False, **_kw: skipped_calls.append(skip_app) or 0,
+    )
+    assert cli.main(["setup", "--yes", "--skip-browser", "--skip-app"]) == 0
+    assert skipped_calls == [True]
