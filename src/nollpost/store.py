@@ -19,6 +19,26 @@ STAT_KEYS = (
     "unique_senders_unsubscribed",
 )
 
+ARCHIVE_LOG_ACTIONS = frozenset({
+    "archive",
+    "archive_and_unsub",
+    "decline_and_archive",
+    "send_decline_and_archive",
+    "sweep_archive",
+})
+
+
+def is_action_undoable(row: dict[str, Any]) -> bool:
+    """Return True when an action_log entry represents an active archived message that can be restored."""
+    if row.get("undone_at") or row.get("status") != "ok":
+        return False
+    act = str(row.get("action") or "")
+    if act in ARCHIVE_LOG_ACTIONS:
+        return True
+    if act == "mark_unsubscribed" and "archived to " in str(row.get("detail") or "").lower():
+        return True
+    return False
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -151,6 +171,9 @@ class TriageStore:
                     action TEXT NOT NULL,
                     status TEXT NOT NULL,
                     detail TEXT NOT NULL DEFAULT '',
+                    archive_mailbox TEXT NOT NULL DEFAULT '',
+                    rfc_message_id TEXT NOT NULL DEFAULT '',
+                    undone_at TEXT,
                     created_at TEXT NOT NULL
                 );
 
@@ -161,6 +184,15 @@ class TriageStore:
                 );
                 """
             )
+            existing_cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(action_log)").fetchall()
+            }
+            if "archive_mailbox" not in existing_cols:
+                conn.execute("ALTER TABLE action_log ADD COLUMN archive_mailbox TEXT NOT NULL DEFAULT ''")
+            if "rfc_message_id" not in existing_cols:
+                conn.execute("ALTER TABLE action_log ADD COLUMN rfc_message_id TEXT NOT NULL DEFAULT ''")
+            if "undone_at" not in existing_cols:
+                conn.execute("ALTER TABLE action_log ADD COLUMN undone_at TEXT")
             for key in STAT_KEYS:
                 conn.execute(
                     "INSERT OR IGNORE INTO stats (key, value) VALUES (?, 0)",
@@ -607,15 +639,133 @@ class TriageStore:
         action: str,
         status: str,
         detail: str = "",
-    ) -> None:
+        archive_mailbox: str = "",
+        rfc_message_id: str = "",
+    ) -> int:
         with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO action_log (
+                    run_id, account, internal_id, sender, subject, action, status,
+                    detail, archive_mailbox, rfc_message_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    account,
+                    internal_id,
+                    sender,
+                    subject,
+                    action,
+                    status,
+                    detail,
+                    archive_mailbox,
+                    rfc_message_id,
+                    utc_now_iso(),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_action_log_entry(self, entry_id: int) -> Optional[dict[str, Any]]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM action_log WHERE id = ?", (entry_id,)).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["can_undo_archive"] = is_action_undoable(d)
+            return d
+
+    def list_action_log(
+        self,
+        *,
+        status: str = "all",
+        run_id: str = "",
+        search: str = "",
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Return recent action_log items (filtered) plus batch run summaries."""
+        capped = max(1, min(500, int(limit)))
+        needle = search.strip().lower()
+        status_filt = status.strip().lower()
+        run_filt = run_id.strip()
+
+        with self._conn() as conn:
+            all_rows = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM action_log ORDER BY id DESC LIMIT 1000"
+                ).fetchall()
+            ]
+
+        runs_map: dict[str, dict[str, Any]] = {}
+        items: list[dict[str, Any]] = []
+        for row in all_rows:
+            rid = str(row.get("run_id") or "")
+            if rid not in runs_map:
+                runs_map[rid] = {
+                    "run_id": rid,
+                    "created_at": row["created_at"],
+                    "total": 0,
+                    "ok": 0,
+                    "failed": 0,
+                    "blocked_captcha": 0,
+                    "drafted": 0,
+                }
+            rs = runs_map[rid]
+            rs["total"] += 1
+            st = str(row.get("status") or "")
+            if st in ("ok", "failed", "blocked_captcha", "drafted"):
+                rs[st] += 1
+
+            if status_filt and status_filt != "all" and st.lower() != status_filt:
+                continue
+            if run_filt and rid != run_filt:
+                continue
+            if needle:
+                hay = f"{row['sender']} {row['subject']} {row['action']} {row['detail']} {row['account']} {rid}".lower()
+                if needle not in hay:
+                    continue
+            if len(items) < capped:
+                row["can_undo_archive"] = is_action_undoable(row)
+                items.append(row)
+
+        return {
+            "items": items,
+            "runs": list(runs_map.values())[:50],
+        }
+
+    def mark_action_undone(self, entry_id: int, detail_note: str = "Restored to INBOX") -> None:
+        now = utc_now_iso()
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM action_log WHERE id = ?", (entry_id,)).fetchone()
+            if not row:
+                return
+            existing_detail = str(row["detail"] or "").strip()
+            new_detail = f"{existing_detail} [{detail_note}]" if existing_detail else detail_note
+            conn.execute(
+                "UPDATE action_log SET undone_at = ?, detail = ? WHERE id = ?",
+                (now, new_detail, entry_id),
+            )
             conn.execute(
                 """
                 INSERT INTO action_log (
-                    run_id, account, internal_id, sender, subject, action, status, detail, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    run_id, account, internal_id, sender, subject, action, status,
+                    detail, archive_mailbox, rfc_message_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, account, internal_id, sender, subject, action, status, detail, utc_now_iso()),
+                (
+                    f"undo-{entry_id}",
+                    row["account"],
+                    row["internal_id"],
+                    row["sender"],
+                    row["subject"],
+                    "undo_archive",
+                    "ok",
+                    detail_note,
+                    row["archive_mailbox"],
+                    row["rfc_message_id"],
+                    now,
+                ),
             )
 
     def get_cached_extraction(self, cache_key: str) -> Optional[dict[str, Any]]:

@@ -38,6 +38,12 @@
     rulesSelectedKeys: new Set(),
     rulesItems: [],
     rulesSeq: 0,
+    auditStatus: "all",
+    auditRunId: "",
+    auditSearch: "",
+    auditItems: [],
+    auditRuns: [],
+    auditSeq: 0,
   };
 
   const qs = (id) => document.getElementById(id);
@@ -1065,6 +1071,131 @@
     await loadState(false);
   }
 
+  async function refreshAuditLogData({ rowsOnly = false } = {}) {
+    const seq = ++state.auditSeq;
+    const params = new URLSearchParams({
+      status: state.auditStatus || "all",
+      run_id: state.auditRunId || "",
+      search: state.auditSearch || "",
+      limit: "200",
+    });
+    const res = await api(`/api/audit-log?${params.toString()}`);
+    if (seq !== state.auditSeq) return;
+    state.auditItems = res.items || [];
+    state.auditRuns = res.runs || [];
+    if (rowsOnly && qs("audit-tbody")) {
+      renderAuditLogRowsOnly();
+    } else {
+      renderAuditLogModalBody();
+    }
+  }
+
+  function renderAuditLogRowsHtml(items) {
+    return items.length
+      ? items
+          .map((row) => {
+            const st = String(row.status || "");
+            const stCls =
+              st === "ok" || st === "drafted"
+                ? "green"
+                : st === "blocked_captcha"
+                ? "warn"
+                : st === "failed"
+                ? "danger"
+                : "muted";
+            const undoneTag = row.undone_at
+              ? ` <span class="pill accent">Restored ${escapeHtml(String(row.undone_at).slice(0, 16).replace("T", " "))}</span>`
+              : "";
+            const undoBtn = row.can_undo_archive
+              ? `<button class="btn small secondary" data-audit-undo="${row.id}">Undo Archive</button>`
+              : "";
+            const actLabel =
+              ACTION_LABELS[row.action] ||
+              { sweep_archive: "Tray Sweep", undo_archive: "Undo Archive", mark_unsubscribed: "Mark Unsub" }[row.action] ||
+              row.action;
+            return `<tr>
+              <td style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">${escapeHtml((row.created_at || "").slice(0, 16).replace("T", " "))}</td>
+              <td><span class="acct ${accountToneClass(row.account)}">${escapeHtml(row.account)}</span></td>
+              <td><span class="pill ${stCls}">${escapeHtml(st)}</span> <span class="pill muted">${escapeHtml(actLabel)}</span></td>
+              <td>
+                <strong>${escapeHtml(row.subject || "(no subject)")}</strong>
+                <div class="sub-meta">
+                  <span>${escapeHtml(row.sender)}</span>
+                  <span>· Run <code>${escapeHtml((row.run_id || "").slice(0, 14))}</code></span>
+                  <span>· ${escapeHtml(row.detail)}</span>
+                  ${undoneTag}
+                </div>
+              </td>
+              <td>${undoBtn}</td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:16px;">No audit log entries match the current filters.</td></tr>`;
+  }
+
+  function renderAuditLogRowsOnly() {
+    const items = state.auditItems || [];
+    qs("snap-title").textContent = `Audit Log & Batch History (${items.length})`;
+    const tbody = qs("audit-tbody");
+    if (tbody) tbody.innerHTML = renderAuditLogRowsHtml(items);
+  }
+
+  function renderAuditLogModalBody() {
+    const statuses = [
+      { id: "all", label: "All" },
+      { id: "ok", label: "ok" },
+      { id: "failed", label: "failed" },
+      { id: "blocked_captcha", label: "blocked_captcha" },
+      { id: "drafted", label: "drafted" },
+    ];
+    const statusTabs = statuses
+      .map(
+        (s) =>
+          `<button class="tab ${state.auditStatus === s.id ? "active" : ""}" data-audit-status="${escapeHtml(s.id)}">${escapeHtml(s.label)}</button>`
+      )
+      .join("");
+    const runOpts = [
+      `<option value="">All Batches (${(state.auditRuns || []).length})</option>`,
+      ...(state.auditRuns || []).map((r) => {
+        const ts = String(r.created_at || "").slice(0, 16).replace("T", " ");
+        const lbl = `${r.run_id} (${ts} · ${r.total} items: ${r.ok} ok, ${r.failed} failed)`;
+        const sel = state.auditRunId === r.run_id ? "selected" : "";
+        return `<option value="${escapeHtml(r.run_id)}" ${sel}>${escapeHtml(lbl)}</option>`;
+      }),
+    ].join("");
+    const items = state.auditItems || [];
+    qs("snap-title").textContent = `Audit Log & Batch History (${items.length})`;
+    qs("snap-body").innerHTML = `
+      <div class="rules-toolbar">
+        <div class="tabs">${statusTabs}</div>
+        <input type="search" id="audit-search-input" class="search-box" value="${escapeHtml(state.auditSearch)}" placeholder="Search sender, subject, or detail…" />
+      </div>
+      <div class="rules-toolbar">
+        <select id="audit-run-select" class="pref-select" style="font-size:12px;padding:4px 8px;">${runOpts}</select>
+        <span id="audit-status" class="modal-status">Undo Archive safely restores archived emails back to INBOX (0 deletions).</span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Acct</th>
+              <th>Outcome &amp; Action</th>
+              <th>Message &amp; Detail</th>
+              <th>Restore</th>
+            </tr>
+          </thead>
+          <tbody id="audit-tbody">${renderAuditLogRowsHtml(items)}</tbody>
+        </table>
+      </div>
+    `;
+    qs("snapshot-modal").classList.remove("hidden");
+  }
+
+  async function openAuditLogModal() {
+    await refreshAuditLogData();
+  }
+
   document.addEventListener("click", async (ev) => {
     const t = ev.target;
     if (!(t instanceof HTMLElement)) return;
@@ -1127,6 +1258,43 @@
       if (t.dataset.rulesKind) {
         state.rulesFilter = t.dataset.rulesKind;
         await refreshSenderRulesData();
+        return;
+      }
+      if (t.dataset.auditStatus) {
+        state.auditStatus = t.dataset.auditStatus;
+        await refreshAuditLogData();
+        return;
+      }
+      if (t.dataset.auditUndo) {
+        const entryId = Number(t.dataset.auditUndo);
+        const row = (state.auditItems || []).find((r) => r.id === entryId);
+        qs("modal-title").textContent = "Confirm Undo Archive";
+        qs("modal-body").innerHTML = row
+          ? `<div class="confirm-warning warn">Move <strong>${escapeHtml(row.subject || "(no subject)")}</strong> from <em>${escapeHtml(row.sender)}</em> back to <strong>${escapeHtml(row.account)}/INBOX</strong>? (Archive-only safeguard preserved; 0 emails deleted.)</div>`
+          : `<div class="confirm-warning warn">Restore archived message back to <strong>INBOX</strong>?</div>`;
+        qs("modal-confirm").disabled = false;
+        qs("confirm-modal").classList.remove("hidden");
+        state.confirmCallback = async () => {
+          qs("confirm-modal").classList.add("hidden");
+          const statusEl = qs("audit-status");
+          try {
+            const resp = await api(`/api/audit-log/${entryId}/undo`, { method: "POST" });
+            await refreshAuditLogData({ rowsOnly: true });
+            const nextEl = qs("audit-status");
+            if (nextEl) {
+              nextEl.className = "modal-status ok";
+              nextEl.textContent = `Restored to ${resp.restored_to || "INBOX"}.`;
+            }
+            await loadState(false);
+          } catch (undoErr) {
+            if (statusEl) {
+              statusEl.className = "modal-status err";
+              statusEl.textContent = `Undo failed: ${undoErr.message}`;
+            } else {
+              showError(undoErr.message);
+            }
+          }
+        };
         return;
       }
       if (t.id === "btn-rules-bulk-apply") {
@@ -1425,6 +1593,11 @@
         }
         return;
       }
+      if (t.id === "audit-run-select" && t instanceof HTMLSelectElement) {
+        state.auditRunId = t.value;
+        await refreshAuditLogData({ rowsOnly: true });
+        return;
+      }
     } catch (err) {
       showError(err.message);
     }
@@ -1439,6 +1612,15 @@
       } catch (err) {
         showError(err.message);
       }
+      return;
+    }
+    if (t instanceof HTMLInputElement && t.id === "audit-search-input") {
+      state.auditSearch = t.value;
+      try {
+        await refreshAuditLogData({ rowsOnly: true });
+      } catch (err) {
+        showError(err.message);
+      }
     }
   });
 
@@ -1448,6 +1630,7 @@
   });
   qs("refresh-btn").addEventListener("click", () => loadState(true).catch((e) => showError(e.message)));
   qs("sender-rules-btn").addEventListener("click", () => openSenderRulesModal().catch((e) => showError(e.message)));
+  qs("audit-log-btn").addEventListener("click", () => openAuditLogModal().catch((e) => showError(e.message)));
   qs("settings-btn").addEventListener("click", () => openSettingsModal().catch((e) => showError(e.message)));
   qs("help-btn").addEventListener("click", () => showQuickGuideModal());
   qs("btn-reset-actions").addEventListener("click", () => {
