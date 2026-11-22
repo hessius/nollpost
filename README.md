@@ -29,7 +29,23 @@
 
 ## Installation
 
-### Recommended (`uv` or `pipx`)
+### Homebrew (macOS Apple Silicon & Intel)
+
+```bash
+# Once v0.1.0 + Hessius/homebrew-tap are published:
+brew install hessius/tap/nollpost
+
+# Or install directly from main (HEAD) today:
+brew tap hessius/nollpost https://github.com/Hessius/nollpost.git
+brew install --HEAD hessius/nollpost/nollpost
+
+# Optional: open the menu-bar launcher (starts Review Board & checks Mail permissions)
+open "$(brew --prefix nollpost)/Nollpost.app"
+```
+
+See [docs/macos-distribution.md](docs/macos-distribution.md) for signing, notarization, and release-tap details.
+
+### `uv` or `pipx`
 
 ```bash
 uv tool install git+https://github.com/Hessius/nollpost.git

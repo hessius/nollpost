@@ -1,0 +1,67 @@
+name: Release macOS App & Homebrew Formula
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos-app:
+    name: Build Universal Nollpost.app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Determine release version
+        id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & sign Nollpost.app (ad-hoc unless Developer ID identity is provided)
+        run: |
+          python3 scripts/build_macos_app.py \
+            --arch universal \
+            --version "${{ steps.meta.outputs.version }}" \
+            --output dist
+
+      - name: Fetch GitHub tag tarball SHA256 and render Formula/nollpost.rb
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          TARBALL="dist/nollpost-${TAG}.tar.gz"
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL "$URL" -o "$TARBALL"
+          python3 scripts/update_homebrew_formula.py \
+            --version "${{ steps.meta.outputs.version }}" \
+            --tarball "$TARBALL" \
+            --url "$URL" \
+            --output dist/nollpost.rb
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nollpost-macos-dist
+          path: |
+            dist/Nollpost-*-macOS.zip
+            dist/nollpost.rb
