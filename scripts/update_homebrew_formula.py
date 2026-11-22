@@ -50,7 +50,11 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
            "-o", (app_contents/"MacOS/Nollpost").to_s
 
     head_ver = (buildpath/"pyproject.toml").read[/^version\\s*=\\s*"([^"]+)"/, 1]
-    app_ver = build.head? ? (head_ver || "0.1.0") : version.to_s
+    app_ver = if build.head?
+      head_ver || "0.2.0"
+    else
+      version.to_s
+    end
     plist = (buildpath/"macos/NollpostMenuBar/Info.plist").read
     plist = plist.gsub(%r{(<key>CFBundleShortVersionString</key>\\s*<string>)[^<]*(</string>)}, "\\\\1#{app_ver}\\\\2")
     plist = plist.gsub(%r{(<key>CFBundleVersion</key>\\s*<string>)[^<]*(</string>)}, "\\\\1#{app_ver}\\\\2")
