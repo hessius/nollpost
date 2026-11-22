@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -216,6 +217,30 @@ def create_app(
             except Exception:
                 pass
 
+        async def _open_browser_when_ready(target_url: str) -> None:
+            parsed = urlsplit(target_url)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port
+            if port:
+                for _ in range(60):
+                    try:
+                        _, writer = await asyncio.wait_for(
+                            asyncio.open_connection(host, port),
+                            timeout=0.1,
+                        )
+                        writer.close()
+                        await writer.wait_closed()
+                        break
+                    except asyncio.CancelledError:
+                        return
+                    except Exception:
+                        await asyncio.sleep(0.05)
+                else:
+                    return
+            else:
+                await asyncio.sleep(0.25)
+            subprocess.Popen(["open", target_url])
+
         if preload:
             preload_task = asyncio.create_task(_preload_inbox())
             runtime.background_tasks.add(preload_task)
@@ -223,8 +248,9 @@ def create_app(
             # Yield once so preload acquires scan_lock before browser requests arrive
             await asyncio.sleep(0)
         if open_browser_url:
-            loop = asyncio.get_running_loop()
-            loop.call_later(0.25, subprocess.Popen, ["open", open_browser_url])
+            browser_task = asyncio.create_task(_open_browser_when_ready(open_browser_url))
+            runtime.background_tasks.add(browser_task)
+            browser_task.add_done_callback(runtime.background_tasks.discard)
         try:
             yield
         finally:
