@@ -38,11 +38,14 @@ brew tap hessius/tap
 brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
 
-# Install Nollpost.app into /Applications (menu-bar launcher) and launch it
-nollpost app
-
-# Optional first-run setup (confirms Archive folders and refreshes /Applications/Nollpost.app)
+# Guided first-run setup (confirms Archive folders and offers the optional macOS menu-bar app)
 nollpost setup
+
+# Verify macOS Automation permissions and Chromium readiness
+nollpost doctor
+
+# Optional: install & launch Nollpost.app into /Applications anytime
+nollpost app
 ```
 
 See [docs/macos-distribution.md](docs/macos-distribution.md) for Homebrew tap release automation and update-check details.

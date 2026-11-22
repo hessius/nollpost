@@ -16,11 +16,14 @@ brew tap hessius/tap
 brew trust hessius/tap   # required once on Homebrew 7.0+
 brew install hessius/tap/nollpost
 
-# Copy Nollpost.app into /Applications (fallback ~/Applications) and launch the menu-bar icon:
+# First-run setup (confirms Archive folders and offers to install the optional menu-bar app):
+nollpost setup
+
+# Or install & launch Nollpost.app into /Applications (fallback ~/Applications) anytime:
 nollpost app
 ```
 
-When upgrading later, run `nollpost app` (or `nollpost setup`) after `brew upgrade` to refresh `/Applications/Nollpost.app`:
+When upgrading later, run `nollpost app` (or `nollpost setup`) if you use the optional menu-bar app and want to refresh `/Applications/Nollpost.app`:
 
 ```bash
 brew upgrade hessius/tap/nollpost

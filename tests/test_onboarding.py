@@ -32,6 +32,8 @@ def _setup_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
     monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr("nollpost.onboarding.locate_macos_app_bundle", lambda *_a, **_kw: None)
+    monkeypatch.setattr("nollpost.onboarding._has_installed_macos_app", lambda: False)
     monkeypatch.setattr("nollpost.onboarding.install_macos_app_bundle", lambda **_kw: None)
     return cfg_path
 
@@ -302,21 +304,62 @@ def test_locate_and_install_macos_app_bundle_with_fallback_and_cli(tmp_path: Pat
     assert cli.main(["app", "--install-only"]) == 0
     assert called == [(True, False)]
 
-    # Verify run_setup logs installed menu-bar bundle when app_installer succeeds
+    # Verify run_setup offers optional menu-bar app: skipped under --yes or 'n', installed+opened on 'y'
     cfg_path = _setup_env(tmp_path, monkeypatch)
     cfg = load_config(ensure_files=False)
     bridge = _StubBridge([])
-    setup_out: list[str] = []
+    yes_out: list[str] = []
+    yes_installed: list[bool] = []
     assert (
         run_setup(
             cfg,
             bridge,
             yes=True,
             skip_browser=True,
-            output_fn=setup_out.append,
-            app_installer=lambda: fallback_dest,
+            output_fn=yes_out.append,
+            app_installer=lambda: yes_installed.append(True) or fallback_dest,
         )
         == 0
     )
     assert cfg_path.exists()
-    assert f"Installed menu-bar app: {fallback_dest}" in "\n".join(setup_out)
+    assert yes_installed == []
+    assert "Optional macOS menu-bar app skipped" in "\n".join(yes_out)
+
+    # Interactive prompt: answer 'n' to decline optional menu bar
+    decline_answers = iter(["n", "n", "", "n"])
+    decline_out: list[str] = []
+    decline_installed: list[bool] = []
+    assert (
+        run_setup(
+            cfg,
+            bridge,
+            skip_browser=True,
+            input_fn=lambda _p: next(decline_answers),
+            output_fn=decline_out.append,
+            app_installer=lambda: decline_installed.append(True) or fallback_dest,
+        )
+        == 0
+    )
+    assert decline_installed == []
+    assert "Optional macOS menu-bar app skipped" in "\n".join(decline_out)
+
+    # Interactive prompt: answer 'y' to opt in -> installs and launches menu-bar app
+    accept_answers = iter(["n", "n", "", "y"])
+    accept_out: list[str] = []
+    opened_bundles: list[Path] = []
+    assert (
+        run_setup(
+            cfg,
+            bridge,
+            skip_browser=True,
+            input_fn=lambda _p: next(accept_answers),
+            output_fn=accept_out.append,
+            app_installer=lambda: fallback_dest,
+            app_opener=lambda p: opened_bundles.append(p) or 0,
+        )
+        == 0
+    )
+    accept_text = "\n".join(accept_out)
+    assert f"Installed menu-bar app: {fallback_dest}" in accept_text
+    assert f"Launched {fallback_dest}" in accept_text
+    assert opened_bundles == [fallback_dest]

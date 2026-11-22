@@ -99,8 +99,9 @@ def main(argv: list[str] | None = None) -> int:
     setup_p = sub.add_parser("setup", help="Interactive first-run onboarding wizard")
     setup_p.add_argument("--yes", action="store_true", help="Accept defaults without interactive prompts")
     setup_p.add_argument("--skip-browser", action="store_true", help="Skip Playwright Chromium install check")
+    setup_p.add_argument("--skip-app", action="store_true", help="Skip optional macOS menu-bar app prompt")
 
-    app_p = sub.add_parser("app", help="Install Nollpost.app into /Applications and launch the menu-bar icon")
+    app_p = sub.add_parser("app", help="Install optional Nollpost.app into /Applications and launch the menu-bar icon")
     app_p.add_argument(
         "--install-only",
         action="store_true",
@@ -143,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(format_doctor_report(checks))
             return 0 if ok else 1
-        return run_setup(config, bridge, yes=args.yes, skip_browser=args.skip_browser)
+        return run_setup(config, bridge, yes=args.yes, skip_browser=args.skip_browser, skip_app=args.skip_app)
 
     config = load_config(ensure_files=True)
     bridge = AppleMailBridge(

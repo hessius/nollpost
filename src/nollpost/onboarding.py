@@ -226,6 +226,12 @@ def _is_valid_app_bundle(path: Path) -> bool:
     return (path / "Contents" / "MacOS" / "Nollpost").is_file()
 
 
+def _has_installed_macos_app() -> bool:
+    return _is_valid_app_bundle(Path("/Applications/Nollpost.app")) or _is_valid_app_bundle(
+        Path.home() / "Applications" / "Nollpost.app"
+    )
+
+
 def locate_macos_app_bundle(explicit_source: Optional[Path] = None) -> Optional[Path]:
     """Find the built Nollpost.app bundle from explicit path, Homebrew prefix, or checkout dist/."""
     candidates: list[Path] = []
@@ -377,7 +383,9 @@ def run_setup(
     output_fn: Callable[[str], None] = print,
     chromium_checker: Callable[[], tuple[bool, str]] = _check_chromium_installed,
     browser_installer: Callable[[], int] = _install_chromium,
+    app_locator: Optional[Callable[[], Optional[Path]]] = None,
     app_installer: Optional[Callable[[], Optional[Path]]] = None,
+    app_opener: Optional[Callable[[Path], int]] = None,
 ) -> int:
     """Interactive onboarding wizard writing validated config.toml."""
     output_fn("Nollpost Setup Wizard")
@@ -531,6 +539,31 @@ def run_setup(
                     merged["profile"]["wanted_domains"] = []
                 else:
                     merged["profile"]["wanted_domains"] = [d.strip().lower() for d in w_ans.split(",") if d.strip()]
+
+        # 5. Optional macOS menu-bar app
+        locator = app_locator if app_locator is not None else locate_macos_app_bundle
+        app_bundle_available = not skip_app and (
+            app_installer is not None or (platform.system() == "Darwin" and locator() is not None)
+        )
+        want_app = False
+        if app_bundle_available:
+            already_installed = _has_installed_macos_app() if app_installer is None else False
+            if yes:
+                want_app = already_installed
+            elif already_installed:
+                app_ans = (
+                    input_fn("\nRefresh Nollpost.app menu-bar app in /Applications and launch it? [Y/n]: ")
+                    .strip()
+                    .lower()
+                )
+                want_app = app_ans in ("", "y", "yes")
+            else:
+                app_ans = (
+                    input_fn("\nInstall optional macOS menu-bar app (Nollpost.app -> /Applications) and launch it? [y/N]: ")
+                    .strip()
+                    .lower()
+                )
+                want_app = app_ans in ("y", "yes")
     except (EOFError, KeyboardInterrupt):
         output_fn("\nSetup cancelled.")
         return 1
@@ -540,15 +573,21 @@ def run_setup(
     config.config_path.write_text(rendered, encoding="utf-8")
     output_fn(f"\nSaved configuration to {config.config_path}")
 
-    installed_app: Optional[Path] = None
-    if not skip_app and (app_installer is not None or platform.system() == "Darwin"):
+    if want_app:
         installer = app_installer if app_installer is not None else (lambda: install_macos_app_bundle(output_fn=output_fn))
         installed_app = installer()
         if installed_app is not None:
             output_fn(f"Installed menu-bar app: {installed_app}")
+            opener = app_opener if app_opener is not None else open_macos_app_bundle
+            open_rc = opener(installed_app)
+            if open_rc == 0:
+                output_fn(f"Launched {installed_app} (look for the @0 icon in your macOS menu bar).")
+            else:
+                output_fn(f"[warn] Installed {installed_app}, but launch exited {open_rc}. Run `nollpost app` to open it.")
+        else:
+            output_fn("[warn] Could not install Nollpost.app to /Applications or ~/Applications. Try `nollpost app`.")
+    elif app_bundle_available:
+        output_fn("Optional macOS menu-bar app skipped. Run `nollpost app` anytime if you want it.")
 
-    if installed_app is not None:
-        output_fn("Next: run `nollpost app` to launch the menu-bar icon, then `nollpost doctor` and `nollpost serve`.")
-    else:
-        output_fn("Next: run `nollpost doctor` and `nollpost serve`.")
+    output_fn("Next: run `nollpost doctor` and `nollpost serve`.")
     return 0

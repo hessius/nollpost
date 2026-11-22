@@ -82,12 +82,12 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
       Nollpost.app is built inside Homebrew's Cellar because Homebrew cannot write
       directly into /Applications during formula installation.
 
-      Install Nollpost.app into /Applications and launch the menu-bar icon:
-        nollpost app
-
-      Run first-time setup and verify Apple Mail permissions:
+      Run first-time setup (confirms Archive folders and offers the optional menu-bar app):
         nollpost setup
         nollpost doctor
+
+      Or install & launch the optional macOS menu-bar app directly anytime:
+        nollpost app
     EOS
   end
 
