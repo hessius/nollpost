@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import locale
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from nollpost.packs import resolve_packs
+
+_BCP47_LOCALE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4}|-[0-9]{3})?$")
 
 VALID_GMAIL_ARCHIVE_STRATEGIES = ("ui_menu", "tag_staging", "two_hop")
 
@@ -157,17 +160,23 @@ def get_cache_dir() -> Path:
 
 def _detect_system_locale() -> str:
     raw_loc = locale.getlocale()[0] or os.environ.get("LANG", "")
-    cleaned = raw_loc.split(".")[0].replace("_", "-").strip()
-    if not cleaned or cleaned.upper() in ("C", "POSIX"):
+    cleaned = raw_loc.split(".")[0].split("@")[0].replace("_", "-").strip()
+    if not cleaned or cleaned.upper() in ("C", "POSIX") or not _BCP47_LOCALE_RE.fullmatch(cleaned):
         return "en-US"
-    return cleaned
+    parts = cleaned.split("-")
+    if len(parts) == 2:
+        return f"{parts[0].lower()}-{parts[1].upper() if len(parts[1]) == 2 else parts[1]}"
+    return parts[0].lower()
 
 
 def _default_accept_language(bcp47_locale: str) -> str:
     lang = bcp47_locale.split("-")[0].lower()
+    has_region = "-" in bcp47_locale
     if lang == "en":
-        return f"{bcp47_locale},en;q=0.9"
-    return f"{bcp47_locale},{lang};q=0.9,en;q=0.8"
+        return f"{bcp47_locale},en;q=0.9" if has_region else "en,en-US;q=0.9"
+    if has_region:
+        return f"{bcp47_locale},{lang};q=0.9,en;q=0.8"
+    return f"{bcp47_locale},en;q=0.8"
 
 
 def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:

@@ -209,10 +209,9 @@ async def _fill_email_if_needed(page: Page, user_email: str) -> bool:
 
 async def _uncheck_marketing_checkboxes(
     page: Page,
-    optout_choice_patterns: Sequence[str] = OPTOUT_CHOICE_PATTERNS,
+    optout_guard_re: re.Pattern[str] = _DEFAULT_PATTERNS.optout_guard_re,
 ) -> int:
     changed = 0
-    optout_guard = re.compile("|".join(optout_choice_patterns) + r"|all\s+email", re.I)
     for frame in page.frames:
         boxes = frame.locator("input[type='checkbox']")
         try:
@@ -229,7 +228,7 @@ async def _uncheck_marketing_checkboxes(
                             return (lbl ? lbl.innerText : el.name || el.value || '').toLowerCase();
                         }"""
                     )
-                    if optout_guard.search(label_txt):
+                    if optout_guard_re.search(label_txt):
                         continue
                     await loc.uncheck()
                     changed += 1
@@ -250,9 +249,9 @@ async def _mark_optout_container(loc) -> None:
         pass
 
 
-async def _check_optout_radios_or_boxes(page: Page, patterns: Sequence[str]) -> bool:
+async def _check_optout_radios_or_boxes(page: Page, patterns: Sequence[str] | re.Pattern[str]) -> bool:
     """Select radio/checkbox options matching opt-out/decline reasons across all frames."""
-    combined_re = re.compile("|".join(patterns), re.I)
+    combined_re = patterns if isinstance(patterns, re.Pattern) else re.compile("|".join(patterns), re.I)
 
     for frame in page.frames:
         labels = frame.locator("label")
@@ -485,8 +484,8 @@ async def run_playwright_action(
 
                 await _fill_email_if_needed(page, user_email)
                 if mode == "unsubscribe":
-                    await _check_optout_radios_or_boxes(page, pats.optout_choice_patterns)
-                    await _uncheck_marketing_checkboxes(page, pats.optout_choice_patterns)
+                    await _check_optout_radios_or_boxes(page, pats.optout_choice_re)
+                    await _uncheck_marketing_checkboxes(page, pats.optout_guard_re)
                 else:
                     await _check_optout_radios_or_boxes(
                         page,

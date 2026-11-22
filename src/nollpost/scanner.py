@@ -19,7 +19,7 @@ from nollpost.models import (
     PdfAttachment,
     UnsubTarget,
 )
-from nollpost.patterns_loader import load_unsub_patterns
+from nollpost.patterns_loader import UnsubPatterns, load_unsub_patterns
 from nollpost.store import TriageStore
 
 EXTRACTOR_VERSION = "v5"
@@ -68,17 +68,28 @@ class ScanSnapshot:
         }
 
 
+def _patterns_cache_sig(config: TriageConfig) -> str:
+    p = config.patterns_path
+    if p is not None and p.exists():
+        return f"{p.resolve()}:{p.stat().st_mtime_ns}"
+    return "builtin"
+
+
 def _extract_cached(
     bridge: AppleMailBridge,
     store: TriageStore,
     header: MailHeader,
     config: TriageConfig,
     bypass_cache: bool = False,
+    *,
+    patterns: UnsubPatterns | None = None,
+    patterns_sig: str | None = None,
 ) -> ExtractedEmailInfo:
     packs_key = ",".join(sorted(config.enabled_packs))
     wanted_key = ",".join(sorted(config.wanted_domains))
+    psig = patterns_sig if patterns_sig is not None else _patterns_cache_sig(config)
     cache_key = (
-        f"{EXTRACTOR_VERSION}:c={int(config.consulting_enabled)}:p={packs_key}:w={wanted_key}:"
+        f"{EXTRACTOR_VERSION}:c={int(config.consulting_enabled)}:p={packs_key}:w={wanted_key}:pat={psig}:"
         f"{header.account}:{header.internal_id}:{header.rfc_message_id}"
     )
     if not bypass_cache:
@@ -92,7 +103,7 @@ def _extract_cached(
         consulting_enabled=config.consulting_enabled,
         wanted_domains=config.wanted_domains,
         enabled_packs=config.enabled_packs,
-        patterns=load_unsub_patterns(config.patterns_path),
+        patterns=patterns or load_unsub_patterns(config.patterns_path),
     )
     payload = extracted.to_dict()
     payload["headers_snapshot"] = extracted.headers_snapshot
@@ -144,6 +155,8 @@ def run_scan(
     accounts = bridge.list_accounts()
     items: list[ClassifiedItem] = []
     warnings: list[str] = []
+    unsub_patterns = load_unsub_patterns(config.patterns_path)
+    patterns_sig = _patterns_cache_sig(config)
 
     if mode == "catchup":
         for acct in accounts:
@@ -176,7 +189,15 @@ def run_scan(
                 if sender_mem and (sender_mem.unsubscribed_at or sender_mem.keep_subscribed):
                     continue
                 try:
-                    extracted = _extract_cached(bridge, store, sample, config=config, bypass_cache=bypass_cache)
+                    extracted = _extract_cached(
+                        bridge,
+                        store,
+                        sample,
+                        config=config,
+                        bypass_cache=bypass_cache,
+                        patterns=unsub_patterns,
+                        patterns_sig=patterns_sig,
+                    )
                 except Exception:
                     continue
                 item = classify_email(
@@ -218,7 +239,15 @@ def run_scan(
                 uid = f"{h.account}:{h.mailbox}:{h.internal_id}"
                 active_uids.add(uid)
                 try:
-                    extracted = _extract_cached(bridge, store, h, config=config, bypass_cache=bypass_cache)
+                    extracted = _extract_cached(
+                        bridge,
+                        store,
+                        h,
+                        config=config,
+                        bypass_cache=bypass_cache,
+                        patterns=unsub_patterns,
+                        patterns_sig=patterns_sig,
+                    )
                 except Exception:
                     extracted = ExtractedEmailInfo()
                 sender_mem = store.get_sender_memory(h.sender_email, h.sender_domain)

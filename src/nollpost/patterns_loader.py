@@ -21,6 +21,8 @@ class UnsubPatterns:
     url_unsub_hint_re: re.Pattern[str]
     unsub_button_patterns: tuple[str, ...]
     optout_choice_patterns: tuple[str, ...]
+    optout_choice_re: re.Pattern[str]
+    optout_guard_re: re.Pattern[str]
     resubscribe_button_re: re.Pattern[str]
     success_text_re: re.Pattern[str]
     decline_button_patterns: tuple[str, ...]
@@ -55,7 +57,10 @@ def _compile_alternation(patterns: list[str], name: str, *, anchor_wrap: str = "
             raise ValueError(f"Invalid regex in '{name}': {p!r} ({exc})") from exc
     joined = "|".join(patterns)
     expr = anchor_wrap.format(joined=joined) if anchor_wrap else f"(?:{joined})"
-    return re.compile(expr, re.I)
+    try:
+        return re.compile(expr, re.I)
+    except re.error as exc:
+        raise ValueError(f"Invalid combined regex in '{name}': {exc}") from exc
 
 
 def _validate_pattern_list(patterns: list[str], name: str) -> tuple[str, ...]:
@@ -64,6 +69,11 @@ def _validate_pattern_list(patterns: list[str], name: str) -> tuple[str, ...]:
             re.compile(p, re.I)
         except re.error as exc:
             raise ValueError(f"Invalid regex in '{name}': {p!r} ({exc})") from exc
+    if patterns:
+        try:
+            re.compile("|".join(patterns), re.I)
+        except re.error as exc:
+            raise ValueError(f"Invalid combined regex in '{name}': {exc}") from exc
     return tuple(patterns)
 
 
@@ -139,6 +149,8 @@ def _load_cached(custom_path_str: str, mtime_ns: int) -> UnsubPatterns:
         url_unsub_hint_re=_compile_alternation(url_hints, "url_unsub_hints"),
         unsub_button_patterns=_validate_pattern_list(unsub_buttons, "unsub_buttons"),
         optout_choice_patterns=_validate_pattern_list(optout_choices, "optout_choices"),
+        optout_choice_re=_compile_alternation(optout_choices, "optout_choices"),
+        optout_guard_re=_compile_alternation([*optout_choices, r"all\s+email"], "optout_choices"),
         resubscribe_button_re=_compile_alternation(
             resub_buttons,
             "resubscribe_buttons",

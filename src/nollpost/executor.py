@@ -142,6 +142,7 @@ class BatchExecutor:
                 )
 
         unsub_cache: dict[str, PlaywrightOutcome] = {}
+        unsub_patterns = load_unsub_patterns(self.config.patterns_path)
         to_mark_read: dict[tuple[str, str], list[tuple[ClassifiedItem, ExecutionItemResult]]] = defaultdict(list)
         to_archive: dict[tuple[str, str, str], list[tuple[ClassifiedItem, ExecutionItemResult]]] = defaultdict(list)
 
@@ -320,7 +321,6 @@ class BatchExecutor:
                             or "one-click" in low_unsub_url
                             or "oneclick" in low_unsub_url
                         ) and not force_pw
-                        unsub_patterns = load_unsub_patterns(self.config.patterns_path)
                         if try_post_first:
                             outcome = await try_rfc8058_one_click(
                                 unsub_t.url,
@@ -443,7 +443,7 @@ class BatchExecutor:
                         allow_private=self.allow_private_urls,
                         browser_locale=self.config.browser_locale,
                         accept_language=self.config.accept_language,
-                        patterns=load_unsub_patterns(self.config.patterns_path),
+                        patterns=unsub_patterns,
                     )
                     if outcome.status == "success":
                         self.store.increment_stat("total_declined", 1)
