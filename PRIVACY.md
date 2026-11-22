@@ -1,0 +1,21 @@
+# Privacy & Safety Architecture
+
+Nollpost is designed to run **100% locally** on your Mac with strict guardrails around your inbox data.
+
+## 1. Local-First & Zero Telemetry
+- **No cloud backend, no analytics, no telemetry:** Nollpost never phones home.
+- **Zero LLM tokens by default:** Classification, link extraction, and unsubscribe execution run deterministically on your machine.
+- **Localhost-only Web UI:** `nollpost serve` binds strictly to `127.0.0.1` and requires an ephemeral per-session token (`secrets.token_urlsafe(24)`) passed via `?key=...`, `X-Triage-Key`, or an `HttpOnly; SameSite=Strict` cookie.
+
+## 2. Strict Archive-Only Non-Deletion Invariant
+- Nollpost **never deletes emails** and never moves messages to `Trash`, `Deleted Messages`, `Papperskorgen`, `Junk`, `Skräppost`, or `Spam`.
+- `validate_archive_destination()` enforces a hard allow/deny check across every mailbox path segment before any AppleScript move runs.
+- Every batch execution requires explicit approval in the **Confirmation Preview** modal (`0 deleted`).
+
+## 3. Outbound Network & SSRF Safeguards
+- Nollpost only makes outbound HTTP requests when you confirm an unsubscribe or decline action.
+- `is_public_http_url()` validates target URLs (and every HTTP redirect / Playwright route) to block `localhost`, `.local`/`.internal` hostnames, private/loopback/link-local IPv4/IPv6 ranges, and obfuscated IP literals.
+- **CAPTCHA / Bot Challenges:** Nollpost never solves or bypasses CAPTCHAs (`reCAPTCHA`, `hCaptcha`, `Turnstile`). If one appears, automation stops immediately (`blocked_captcha`) and surfaces the URL for manual completion.
+
+## 4. Local State Storage
+All state lives locally in SQLite (`state.db`), extracted PDFs (`invoices/`), and unsubscribe confirmation screenshots (`screenshots/`), under your macOS `Application Support` and `Caches` directories (or custom `NOLLPOST_DATA_DIR` / `NOLLPOST_CACHE_DIR` paths).

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nollpost — Morning Mail Triage</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header-a">
+      <div class="header-top">
+        <div>
+          <h1 id="board-title">Nollpost — Morning Mail Triage</h1>
+          <div class="tally-pills" id="tally-pills"></div>
+        </div>
+        <div class="header-controls">
+          <div class="mode-switch">
+            <button class="btn small active" id="mode-inbox" data-mode="inbox">Daily Inbox</button>
+            <button class="btn small" id="mode-catchup" data-mode="catchup">Archive Catch-Up</button>
+          </div>
+          <label class="toggle-check" title="Show Chromium window while unsubscribing/declining">
+            <input type="checkbox" id="show-browser-toggle" />
+            <span>Show Browser</span>
+          </label>
+          <button class="btn small" id="refresh-btn">Refresh Scan</button>
+        </div>
+      </div>
+
+      <div class="exec-bar">
+        <div class="batch-summary" id="batch-summary">Loading mailboxes…</div>
+        <div class="exec-buttons">
+          <button class="btn outline-accent" id="btn-exec-selected" disabled>Execute Selected (0)</button>
+          <button class="btn secondary" id="btn-exec-category" disabled>Execute Category (0)</button>
+          <button class="btn primary" id="btn-exec-all" disabled>Execute All Actions (0)</button>
+        </div>
+      </div>
+
+      <div class="tray hidden" id="safety-tray">
+        <div id="tray-text"></div>
+        <div class="tray-actions">
+          <button class="btn small secondary" id="btn-tray-dismiss">Dismiss Tray</button>
+          <button class="btn small primary" id="btn-tray-sweep">Review &amp; Sweep Opened…</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="filter-bar">
+      <div class="tabs" id="category-tabs"></div>
+      <div class="filter-right">
+        <div class="tabs" id="account-tabs"></div>
+        <label class="toggle-check">
+          <input type="checkbox" id="unread-only-toggle" />
+          <span>Unread only</span>
+        </label>
+        <input type="search" id="search-input" class="search-box" placeholder="Search sender or subject…" />
+      </div>
+    </section>
+
+    <div id="progress-banner" class="progress-banner hidden"></div>
+    <div id="results-banner" class="results-banner hidden"></div>
+
+    <main id="queue-container" class="tbl-wrap"></main>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div id="confirm-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="modal-title">Confirmation Preview</h2>
+        <span class="pill muted">0 emails will be deleted (Archive only)</span>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div class="modal-foot">
+        <button class="btn secondary" id="modal-cancel">Cancel</button>
+        <button class="btn primary" id="modal-confirm">Confirm &amp; Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Snapshot Modal -->
+  <div id="snapshot-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal wide">
+      <div class="modal-head">
+        <h2 id="snap-title">Missed Unsubscribe Diagnostics</h2>
+        <button class="btn small secondary" id="snap-close">Close</button>
+      </div>
+      <div id="snap-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

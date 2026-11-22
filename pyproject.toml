@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nollpost"
+version = "0.1.0"
+description = "Zero-token multi-inbox Apple Mail triage board, safe Archive-only manager, and Playwright unsubscribe runner"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Hessius", email = "hessius@me.com" },
+]
+keywords = [
+    "email",
+    "inbox-zero",
+    "apple-mail",
+    "macos",
+    "unsubscribe",
+    "playwright",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+]
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0",
+    "playwright==1.60.0",
+    "uvicorn>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+nollpost = "nollpost.cli:main"
+mail-triage = "nollpost.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Hessius/nollpost"
+Repository = "https://github.com/Hessius/nollpost"
+Issues = "https://github.com/Hessius/nollpost/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nollpost"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_default_fixture_loop_scope = "function"

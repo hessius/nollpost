@@ -1,0 +1,433 @@
+"""Deterministic email classifier for nollpost."""
+
+from __future__ import annotations
+
+import re
+from typing import Optional
+
+from nollpost.config import TriageConfig
+from nollpost.models import (
+    ActionType,
+    ClassifiedItem,
+    ExtractedEmailInfo,
+    MailHeader,
+)
+from nollpost.store import SenderMemoryRecord, days_since_iso, hours_since_iso
+
+SECURITY_KEYWORDS_RE = re.compile(
+    r"\b(?:säkerhetsvarning|security\s+alert|app[\s‑-]specifikt\s+lösenord|app-specific\s+password|verification\s+code|engångskod|logga\s+in\s+från|sign-in|two-factor|2fa)\b",
+    re.I,
+)
+
+REDDIT_COMMENT_RE = re.compile(
+    r"\b(?:replied\s+to|svarade\s+på|commented\s+on|kommenterade|mentioned\s+you|nämnde\s+dig)\b",
+    re.I,
+)
+
+GITHUB_BOT_SUBJECT_RE = re.compile(
+    r"\b(?:deployment\s+(?:failed|succeeded)|workflow\s+run|dependabot|release\s+please|chore\(deps\))\b",
+    re.I,
+)
+
+NOREPLY_RE = re.compile(
+    r"(?:no[-_.]?reply|donotreply|do[-_.]?not[-_.]?reply|notifications?@|mailer-daemon|postmaster@|newsletter|nyheter|info@|news@|hello@|shop@|support@|marketing@)",
+    re.I,
+)
+
+STRONG_RETAIL_PROMO_RE = re.compile(
+    r"\b(?:black\s+(?:week|friday)|rabatt|erbjudande|fynd|% off|rea\b|nyhetsbrev|discount\s+code)\b",
+    re.I,
+)
+
+CRITICAL_BILL_TERMS_RE = re.compile(
+    r"\b(?:kivra|fortnox|bankgirot|skatteverket|faktura|invoice|påminnelse|inkasso|förfallodatum|due\s+date|betalning|payout|utbetalning)\b",
+    re.I,
+)
+
+
+def _domain_matches(domain: str, candidates: list[str]) -> bool:
+    dom = domain.lower().strip()
+    if not dom:
+        return False
+    return any(dom == c or dom.endswith("." + c) for c in candidates)
+
+
+def _contains_any_keyword(text: str, keywords: list[str]) -> Optional[str]:
+    for kw in keywords:
+        if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", text, re.I):
+            return kw
+    return None
+
+
+def _base_allowed_actions(
+    header: MailHeader,
+    extracted: ExtractedEmailInfo,
+    category: str,
+    catchup_mode: bool = False,
+) -> list[ActionType]:
+    if catchup_mode:
+        actions: list[ActionType] = ["no_action"]
+        if category == "newsletters" and extracted.unsub_target is not None:
+            actions.append("unsub_only")
+        return actions
+
+    actions = ["no_action", "mark_read"]
+    if extracted.pdf_attachments:
+        actions.append("read_show_invoice")
+    if extracted.pertinent_url:
+        actions.append("read_open_link")
+
+    if category == "consulting":
+        if extracted.consulting_links.decline_url:
+            actions.append("decline_and_archive")
+        else:
+            actions.append("draft_decline")
+            actions.append("send_decline_and_archive")
+
+    actions.append("archive")
+    if extracted.unsub_target is not None:
+        actions.append("archive_and_unsub")
+    return actions
+
+
+def classify_email(
+    header: MailHeader,
+    extracted: ExtractedEmailInfo,
+    config: TriageConfig,
+    archive_mailbox: str,
+    sender_mem: Optional[SenderMemoryRecord] = None,
+    catchup_mode: bool = False,
+) -> ClassifiedItem:
+    """Classify one email into category, default action, allowed actions, and badges."""
+    uid = f"{header.account}:{header.mailbox}:{header.internal_id}"
+    combined = f"{header.subject}\n{header.sender}\n{extracted.plain_excerpt}".lower()
+    badges: list[str] = []
+    learned_pref: Optional[str] = None
+    repeat_days: Optional[int] = None
+
+    has_unsub = extracted.unsub_target is not None
+    looks_like_newsletter = bool(extracted.newsletter_signals)
+
+    # 1. Explicit "always_keep" memory override
+    if sender_mem and sender_mem.preferred_action == "always_keep":
+        allowed = _base_allowed_actions(header, extracted, "updates", catchup_mode=catchup_mode)
+        default_act: ActionType = (
+            "no_action"
+            if (header.is_read or catchup_mode)
+            else ("read_open_link" if extracted.pertinent_url else "no_action")
+        )
+        badges.append("Pinned Keep")
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="updates",
+            subcategory="Pinned Sender",
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            learned_preference="always_keep",
+            reason="Explicitly marked always keep",
+        )
+
+    # 2. Consulting outreach (Guidepoint, Visasq/Coleman, GLG, etc.)
+    is_consulting = _domain_matches(header.sender_domain, config.consulting_networks) or bool(
+        extracted.consulting_links.decline_url or extracted.consulting_links.review_url
+    )
+    if is_consulting:
+        pos_kw = _contains_any_keyword(combined, config.consulting_match_keywords)
+        neg_kw = _contains_any_keyword(combined, config.consulting_negative_keywords)
+        allowed = _base_allowed_actions(header, extracted, "consulting", catchup_mode=catchup_mode)
+
+        if pos_kw and not neg_kw:
+            badges.append(f"Expertise Match: {pos_kw}")
+            default_act = (
+                "no_action"
+                if (header.is_read or catchup_mode)
+                else ("read_open_link" if extracted.pertinent_url else "no_action")
+            )
+            subcat = "Consulting Match"
+            reason = f"Matches expertise keyword '{pos_kw}'"
+        elif pos_kw and neg_kw:
+            badges.append(f"Review Match: {pos_kw}")
+            default_act = (
+                "no_action"
+                if (header.is_read or catchup_mode)
+                else ("read_open_link" if extracted.pertinent_url else "no_action")
+            )
+            subcat = "Consulting Match"
+            reason = f"Mentions '{pos_kw}' alongside '{neg_kw}' — review manually"
+        else:
+            mismatch_lbl = f"Mismatch: {neg_kw}" if neg_kw else "Mismatch: Outside Expertise"
+            badges.append(mismatch_lbl)
+            if catchup_mode or header.is_read:
+                default_act = "no_action"
+            elif extracted.consulting_links.decline_url:
+                default_act = "decline_and_archive"
+            else:
+                default_act = "draft_decline"
+            reason = (
+                "Consulting request outside configured expertise with clickable Decline button"
+                if extracted.consulting_links.decline_url
+                else "Consulting request outside configured expertise (no Decline button; draft boilerplate ready)"
+            )
+            subcat = "Consulting Mismatch"
+
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="consulting",
+            subcategory=subcat,
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            reason=reason,
+        )
+
+    # 3. Bills, Invoices, Gov / Kivra, Security Alerts (protected even if ESP sends with List-Unsubscribe!)
+    bill_kw = _contains_any_keyword(combined, config.bill_keywords)
+    is_security = bool(
+        SECURITY_KEYWORDS_RE.search(combined)
+        or _domain_matches(header.sender_domain, ["accounts.google.com", "email.apple.com", "id.apple.com"])
+    )
+    is_explicit_bill_sender = any(
+        k in header.sender_domain or k in header.sender_email
+        for k in ("kivra", "fortnox", "bankgirot", "skatteverket", "faktura", "xdesk", "accounts.google.com", "email.apple.com")
+    )
+    has_critical_bill = bool(CRITICAL_BILL_TERMS_RE.search(combined))
+    is_retail_promo_noise = bool(STRONG_RETAIL_PROMO_RE.search(combined)) and not has_critical_bill and not extracted.pdf_attachments
+
+    if (is_explicit_bill_sender or extracted.pdf_attachments or is_security or (bill_kw and not is_retail_promo_noise)):
+        allowed = _base_allowed_actions(header, extracted, "attention", catchup_mode=catchup_mode)
+        if is_security:
+            subcat = "Security Alert"
+            badges.append("Security")
+        elif "kivra" in combined or "kivra" in header.sender_domain:
+            subcat = "Gov / Kivra"
+            badges.append("Kivra")
+        else:
+            subcat = "Bill / Invoice"
+            badges.append("Invoice" if extracted.pdf_attachments else "Billing / Admin")
+
+        if catchup_mode:
+            default_act = "no_action"
+        elif header.is_read:
+            default_act = "no_action"
+            badges.append("Already read")
+        elif extracted.pdf_attachments:
+            default_act = "read_show_invoice"
+        elif extracted.pertinent_url:
+            default_act = "read_open_link"
+        else:
+            default_act = "no_action"
+
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="attention",
+            subcategory=subcat,
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            reason=f"Matched {'security alert' if is_security else (bill_kw or 'PDF attachment')}",
+        )
+
+    # 4. GitHub (Human vs Bot)
+    if header.sender_domain == "github.com":
+        sender_low = header.sender.lower()
+        is_bot = any(bot in sender_low for bot in config.bot_senders) or bool(
+            GITHUB_BOT_SUBJECT_RE.search(header.subject)
+        )
+        if is_bot:
+            allowed = _base_allowed_actions(header, extracted, "newsletters", catchup_mode=catchup_mode)
+            default_act = (
+                "no_action"
+                if (header.is_read or catchup_mode)
+                else "archive"
+            )
+            badges.append("GitHub Bot")
+            return ClassifiedItem(
+                uid=uid,
+                header=header,
+                extracted=extracted,
+                category="newsletters",
+                subcategory="Bot Noise",
+                default_action=default_act,
+                allowed_actions=allowed,
+                badges=badges,
+                archive_mailbox=archive_mailbox,
+                reason="Automated GitHub bot/deployment notification",
+            )
+        allowed = _base_allowed_actions(header, extracted, "updates", catchup_mode=catchup_mode)
+        default_act = (
+            "no_action"
+            if (header.is_read or catchup_mode)
+            else ("read_open_link" if extracted.pertinent_url else "no_action")
+        )
+        badges.append("GitHub Human")
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="updates",
+            subcategory="GitHub Human",
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            reason="GitHub notification from human contributor",
+        )
+
+    # 5. Creator / Project Updates & Human Comment Replies
+    is_wanted_domain = _domain_matches(header.sender_domain, config.wanted_domains)
+    is_reddit_reply = _domain_matches(header.sender_domain, ["redditmail.com", "reddit.com"]) and bool(
+        REDDIT_COMMENT_RE.search(header.subject)
+    )
+    if is_wanted_domain or is_reddit_reply:
+        allowed = _base_allowed_actions(header, extracted, "updates", catchup_mode=catchup_mode)
+        subcat = "Comment Reply" if is_reddit_reply else "Creator Update"
+        badges.append("Comment" if is_reddit_reply else "Wanted Update")
+        if catchup_mode:
+            default_act = "no_action"
+        elif header.is_read:
+            default_act = "no_action"
+            badges.append("Already read")
+        elif extracted.pertinent_url:
+            default_act = "read_open_link"
+        else:
+            default_act = "mark_read"
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="updates",
+            subcategory=subcat,
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            reason="Matched wanted project/creator/comment rule",
+        )
+
+    # 6. Transactional Delivery / Order Notifications (archive only, never auto-unsub)
+    is_transactional = _domain_matches(header.sender_domain, config.transactional_domains) or bool(
+        re.search(r"\b(?:leverans|skickas\s+nu|beställning\s+är\s+packad|tack\s+för\s+din\s+beställning|tracking\s+number)\b", combined)
+    )
+    if is_transactional:
+        allowed = _base_allowed_actions(header, extracted, "newsletters", catchup_mode=catchup_mode)
+        badges.append("Transactional")
+        default_act = "no_action" if (header.is_read or catchup_mode) else "archive"
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="newsletters",
+            subcategory="Transactional",
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            reason="Transactional order/delivery notification (Archive only)",
+        )
+
+    # 7. Newsletters & Promotions
+    if looks_like_newsletter:
+        allowed = _base_allowed_actions(header, extracted, "newsletters", catchup_mode=catchup_mode)
+        no_unsub = not has_unsub
+
+        if sender_mem and sender_mem.keep_subscribed and sender_mem.preferred_action:
+            learned_pref = sender_mem.preferred_action
+            badges.append(f"Learned: {learned_pref}")
+            if catchup_mode or header.is_read:
+                default_act = "no_action"
+            elif learned_pref in allowed:
+                default_act = learned_pref  # type: ignore[assignment]
+            else:
+                default_act = "archive"
+        elif sender_mem and sender_mem.unsubscribed_at:
+            hrs = hours_since_iso(sender_mem.unsubscribed_at)
+            days = days_since_iso(sender_mem.unsubscribed_at) or 0
+            if hrs is not None and hrs <= 48.0:
+                badges.append("Unsubbed recently")
+                default_act = "no_action" if (header.is_read or catchup_mode) else "archive"
+            else:
+                repeat_days = days
+                badges.append(f"Sent after unsub ({days}d ago)")
+                if catchup_mode:
+                    default_act = "unsub_only" if has_unsub else "no_action"
+                elif header.is_read:
+                    default_act = "no_action"
+                else:
+                    default_act = "archive_and_unsub" if has_unsub else "archive"
+        else:
+            if no_unsub:
+                badges.append("No unsub found")
+            if catchup_mode:
+                default_act = "unsub_only" if has_unsub else "no_action"
+            elif header.is_read:
+                default_act = "no_action"
+                badges.append("Already read")
+            else:
+                default_act = "archive_and_unsub" if has_unsub else "archive"
+
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="newsletters",
+            subcategory="Newsletter",
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            no_unsub_found=no_unsub,
+            repeat_offender_days=repeat_days,
+            learned_preference=learned_pref,
+            archive_mailbox=archive_mailbox,
+            reason="Newsletter/promo signals detected"
+            + ("" if has_unsub else " (no reliable unsubscribe target extracted)"),
+        )
+
+    # 8. Catch-all in Archive Catch-Up mode (skip non-newsletters)
+    if catchup_mode:
+        allowed = _base_allowed_actions(header, extracted, "newsletters", catchup_mode=True)
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="newsletters",
+            subcategory="Non-Newsletter",
+            default_action="no_action",
+            allowed_actions=["no_action"],
+            archive_mailbox=archive_mailbox,
+            reason="No newsletter signals in Archive Catch-Up",
+        )
+
+    # 9. Direct Human vs Unrecognized Automated (conservative No Action fallback!)
+    is_automated = bool(NOREPLY_RE.search(header.sender_email) or extracted.newsletter_signals)
+    allowed = _base_allowed_actions(header, extracted, "attention", catchup_mode=False)
+    if is_automated:
+        badges.append("Unclassified Automated")
+        subcat = "Unclassified Automated"
+        reason = "Automated sender without clear promo/unsub or invoice signals — kept safe as No action"
+    else:
+        badges.append("Human")
+        subcat = "Direct Human"
+        reason = "Likely human email"
+
+    return ClassifiedItem(
+        uid=uid,
+        header=header,
+        extracted=extracted,
+        category="attention",
+        subcategory=subcat,
+        default_action="no_action",
+        allowed_actions=allowed,
+        badges=badges,
+        archive_mailbox=archive_mailbox,
+        reason=reason,
+    )
