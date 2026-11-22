@@ -527,10 +527,23 @@ def create_app(
         entry = runtime.store.get_missed_unsubscribe(missed_id)
         if not entry:
             raise HTTPException(status_code=404, detail="Missed entry not found")
+        acct_emails: list[str] = []
+        snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
+        if snap:
+            acct_emails = [addr for a in snap.accounts for addr in a.addresses]
+        else:
+            try:
+                acct_emails = [
+                    addr
+                    for a in await asyncio.to_thread(runtime.bridge.list_accounts)
+                    for addr in a.addresses
+                ]
+            except Exception:
+                acct_emails = []
         return {
             "id": missed_id,
-            "markdown": format_missed_bug_report(entry),
-            "entry": redact_missed_entry(entry),
+            "markdown": format_missed_bug_report(entry, account_emails=acct_emails),
+            "entry": redact_missed_entry(entry, account_emails=acct_emails),
         }
 
     @app.post("/api/unsub/mark-succeeded")

@@ -850,7 +850,13 @@
         const mid = Number(t.dataset.missedCopyReport);
         const statusEl = qs("missed-copy-status");
         const prevEl = qs("missed-redacted-preview");
-        const rep = await api(`/api/missed/${mid}/export`);
+        let rep;
+        try {
+          rep = await api(`/api/missed/${mid}/export`);
+        } catch (copyErr) {
+          if (statusEl) statusEl.textContent = `Export failed: ${copyErr.message}`;
+          return;
+        }
         if (prevEl) {
           prevEl.classList.remove("hidden");
           prevEl.innerHTML = `<strong>Privacy-Redacted Report (review before posting):</strong><pre style="margin-top:6px;">${escapeHtml(rep.markdown)}</pre>`;

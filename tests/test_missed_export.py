@@ -63,10 +63,61 @@ def test_redact_url_strips_tokens_emails_userinfo_and_jwt_segments():
     assert "token=<redacted>" in u1
     assert "lang=sv" in u1
 
+    # URL-encoded base64 path segment & mailto trailing punctuation & hidden_domains
+    u2 = redact_url("https://esp.example/u/YWxpY2VAbWUuc2U%3D/confirm")
+    assert "YWxpY2VAbWUuc2U" not in u2
+    assert "/<redacted-token>/" in u2
+
     m1 = redact_url("mailto:unsub+alice=me.example@mg.acme.example?subject=stop")
     assert m1 == "mailto:<redacted>@mg.acme.example"
     assert "alice" not in m1
     assert "subject=" not in m1
+
+    m2 = redact_url("mailto:alice@hessius.example.", hidden_domains={"hessius.example"})
+    assert m2 == "mailto:<redacted>@<redacted>."
+
+
+def test_real_extractor_headers_without_to_and_sender_brand_preservation(tmp_path: Path):
+    entry = {
+        "id": 42,
+        "account": "Personal",
+        "mailbox": "INBOX",
+        "internal_id": "42",
+        "sender": "Acme <news@acme.example>",
+        "sender_domain": "acme.example",
+        "subject": "Weekly deal for Alice Svensson",
+        "stage": "playwright",
+        "failure_reason": "Failed reading /Users/alice/tmp/debug.html on https://mg.acme.example/u(1)?token=SecretToken123",
+        "candidate_links": [],
+        "headers_snapshot": (
+            "From: Acme <news@acme.example>\n"
+            "Subject: Weekly deal for Alice Svensson\n"
+            "List-Unsubscribe: <https://mg.acme.example/unsub?token=TopSecret999>\n"
+            "X-Mailer: SendGrid"
+        ),
+        "footer_html_snapshot": (
+            '<div class="acme"><p>Sent to Alice Svensson (alice.svensson@hessius.example).</p>'
+            '<a href="mailto:alice.svensson@hessius.example">Contact</a>'
+            '<a href="https://mg.acme.example/unsub(v2)?token=Secret999&lang=sv">Avprenumerera</a></div>'
+        ),
+        "final_url": "",
+    }
+    md = format_missed_bug_report(entry, account_emails=["alice.svensson@hessius.example"])
+    for secret in [
+        "Alice",
+        "Svensson",
+        "hessius.example",
+        "SecretToken123",
+        "TopSecret999",
+        "Secret999",
+        "/Users/alice",
+    ]:
+        assert secret not in md
+
+    # Sender brand and domain in headers/DOM MUST stay intact
+    assert "https://mg.acme.example/unsub" in md
+    assert '<div class="acme">' in md
+    assert "/Users/<redacted>/tmp/debug.html" in md
 
 
 def test_missed_export_redacts_pii_while_preserving_esp_headers_and_dom(tmp_path: Path):

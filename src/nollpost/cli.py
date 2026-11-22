@@ -151,10 +151,21 @@ def main(argv: list[str] | None = None) -> int:
             if not entry:
                 print(f"Missed-unsub #{args.id} not found", file=sys.stderr)
                 return 1
-            if args.export_json:
-                print(json.dumps(redact_missed_entry(entry), ensure_ascii=False, indent=2))
+            acct_emails: list[str] = []
+            try:
+                acct_emails = [addr for a in bridge.list_accounts() for addr in a.addresses]
+            except Exception:
+                acct_emails = []
+            if args.export_json or args.as_json:
+                print(
+                    json.dumps(
+                        redact_missed_entry(entry, account_emails=acct_emails),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
             else:
-                print(format_missed_bug_report(entry))
+                print(format_missed_bug_report(entry, account_emails=acct_emails))
             return 0
         entries = store.list_missed_unsubscribes(include_resolved=args.all)
         if args.as_json:
