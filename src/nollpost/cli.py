@@ -63,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
     auto_p = sub.add_parser("auto", help="Run one headless auto-triage pass for eligible rules")
     auto_p.add_argument("--dry-run", action="store_true", help="Preview eligible auto-actions without executing")
+    auto_p.add_argument("--force", action="store_true", help="Run even if [automation].enabled is false")
     auto_p.add_argument("--json", action="store_true", dest="as_json")
 
     serve_p = sub.add_parser("serve", help="Start the local 127.0.0.1 Review Board web app")
@@ -168,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "auto":
-        report = run_auto_triage(config, store, bridge, dry_run=args.dry_run)
+        report = run_auto_triage(config, store, bridge, dry_run=args.dry_run, force=args.force)
         if args.as_json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         else:

@@ -375,3 +375,41 @@ def test_cli_auto_json(tmp_path: Path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "skipped"
     assert payload["reason"] == "mail_not_running"
+
+
+def test_auto_force_flag_and_scan_warnings_preserved(tmp_path: Path, monkeypatch):
+    _setup_cfg(
+        tmp_path,
+        monkeypatch,
+        """
+[automation]
+enabled = false
+""",
+    )
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    store.record_sender_preference("alerts@mybank.example", "MyBank", "auto_archive", keep_subscribed=True)
+
+    class PartialWarnBridge(_AutoFakeBridge):
+        def list_accounts(self):
+            return [
+                AccountInfo("iCloud", ["me@icloud.com"], "INBOX", "Archive", "Sent Messages"),
+                AccountInfo("BrokenAcct", ["b@example.com"], "INBOX", "Archive", "Sent"),
+            ]
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "BrokenAcct":
+                raise RuntimeError("BrokenAcct offline")
+            return super().scan_mailbox_metadata(account, mailbox, limit, include_attachments, days_back)
+
+    bridge = PartialWarnBridge()
+    skipped = run_auto_triage(cfg, store, bridge, mail_running_checker=lambda: True)
+    assert skipped["status"] == "skipped"
+    assert skipped["reason"] == "disabled"
+
+    forced = run_auto_triage(cfg, store, bridge, force=True, mail_running_checker=lambda: True)
+    assert forced["status"] == "ok"
+    assert forced["summary"]["archived"] == 1
+    assert any("BrokenAcct offline" in w for w in forced["warnings"])
+    digest = store.get_auto_digest()
+    assert any("BrokenAcct offline" in w for w in digest["last_warnings"])

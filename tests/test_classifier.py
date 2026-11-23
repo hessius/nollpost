@@ -480,3 +480,30 @@ def test_always_archive_with_auto_flag_applies_to_non_newsletter(tmp_path: Path,
     assert item.default_action == "archive"
     assert item.learned_preference == "archive"
     assert item.subcategory == "Remembered Archive"
+
+
+def test_security_alert_from_consulting_domain_stays_in_attention(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        """
+[consulting]
+enabled = true
+networks = ["guidepointglobal.com"]
+match_keywords = ["medtech"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config(ensure_files=False)
+
+    sec = classify_email(
+        _hdr("Your verification code", "Guidepoint <no-reply@guidepointglobal.com>", "no-reply@guidepointglobal.com", "guidepointglobal.com"),
+        ExtractedEmailInfo(plain_excerpt="Security alert: use verification code 123456 to sign in."),
+        cfg,
+        "Archive",
+    )
+    assert sec.category == "attention"
+    assert sec.subcategory == "Security Alert"
+    assert sec.default_action == "no_action"

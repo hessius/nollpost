@@ -884,11 +884,15 @@ def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
     _setup_test_env(tmp_path, monkeypatch)
 
     class AutoWebBridge(FakeBridge):
+        def __init__(self):
+            super().__init__()
+            self.archived_ids: set[str] = set()
+
         def check_for_new_mail(self) -> bool:
             return False
 
         def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
-            if account == "iCloud":
+            if account == "iCloud" and "10" not in self.archived_ids:
                 return [
                     MailHeader("iCloud", "INBOX", "10", "m10", "Card notice", "MyBank <alerts@bank.example>", "alerts@bank.example", "bank.example", "2026-11-23T09:00:00", False, False, 0),
                 ]
@@ -902,6 +906,7 @@ def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
             return msg.as_bytes()
 
         def mark_read_and_archive(self, account: str, mailbox: str, archive_mailbox: str, internal_ids: list[str], *, mark_read: bool = True) -> list[str]:
+            self.archived_ids.update(internal_ids)
             return list(internal_ids)
 
         def synchronize_account(self, account: str, timeout: int = 8) -> None:
@@ -914,11 +919,18 @@ def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
     headers = {"X-Triage-Key": token}
 
     with TestClient(app) as client:
+        before_activity = app.state.runtime.last_activity_at
+        bg_res = client.post("/api/auto/run?background=1", headers=headers)
+        assert bg_res.status_code == 200
+        # Background timer auto-run must NOT extend the server idle-shutdown window
+        assert app.state.runtime.last_activity_at == before_activity
+
         run_res = client.post("/api/auto/run", headers=headers)
         assert run_res.status_code == 200
         run_data = run_res.json()
         assert run_data["status"] == "ok"
-        assert run_data["summary"] == {"archived": 1, "declined": 0, "failed": 0}
+        assert run_data["summary"] == {"archived": 0, "declined": 0, "failed": 0}
+        assert bg_res.json()["summary"] == {"archived": 1, "declined": 0, "failed": 0}
         assert run_data["unseen_count"] == 1
 
         digest = client.get("/api/auto/digest", headers=headers).json()

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import subprocess
-from contextlib import contextmanager
+import time
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, AsyncIterator, Callable, Iterator, Optional
 
+from nollpost.classifier import BASE_SECURITY_DOMAINS, SECURITY_KEYWORDS_RE, _domain_matches
 from nollpost.config import TriageConfig
 from nollpost.executor import BatchExecutor
 from nollpost.mail_bridge import AppleMailBridge, is_gmail_all_mail_destination
@@ -29,8 +31,6 @@ def _is_mail_running() -> bool:
 @contextmanager
 def acquire_run_lock(data_dir: Path, *, wait_seconds: float = 0.0) -> Iterator[bool]:
     """Acquire exclusive flock on `<data_dir>/run.lock`, optionally waiting up to `wait_seconds`."""
-    import time
-
     data_dir.mkdir(parents=True, exist_ok=True)
     lock_path = data_dir / "run.lock"
     fh = lock_path.open("a+", encoding="utf-8")
@@ -47,6 +47,35 @@ def acquire_run_lock(data_dir: Path, *, wait_seconds: float = 0.0) -> Iterator[b
                     acquired = False
                     break
                 time.sleep(0.05)
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        fh.close()
+
+
+@asynccontextmanager
+async def async_acquire_run_lock(data_dir: Path, *, wait_seconds: float = 0.0) -> AsyncIterator[bool]:
+    """Non-blocking asyncio variant of `acquire_run_lock`."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = data_dir / "run.lock"
+    fh = lock_path.open("a+", encoding="utf-8")
+    acquired = False
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
+    try:
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    acquired = False
+                    break
+                await asyncio.sleep(0.05)
         yield acquired
     finally:
         if acquired:
@@ -75,8 +104,12 @@ def select_auto_actions(
         h = item.header
         if h.is_read or str(h.mailbox or "").strip().upper() != "INBOX":
             continue
-        if config.auto_skip_security_alerts and item.subcategory == "Security Alert":
-            continue
+        if config.auto_skip_security_alerts:
+            if item.subcategory == "Security Alert":
+                continue
+            combined = f"{h.subject}\n{h.sender}\n{item.extracted.plain_excerpt}".lower()
+            if SECURITY_KEYWORDS_RE.search(combined) or _domain_matches(h.sender_domain, BASE_SECURITY_DOMAINS):
+                continue
         if config.auto_skip_pdf_invoices and item.extracted.pdf_attachments:
             continue
 
@@ -120,6 +153,7 @@ async def async_run_auto_triage(
     bridge: AppleMailBridge,
     *,
     dry_run: bool = False,
+    force: bool = False,
     headless: bool = True,
     allow_private_urls: bool = False,
     mail_running_checker: Optional[Callable[[], bool]] = None,
@@ -128,7 +162,7 @@ async def async_run_auto_triage(
     """Run one headless auto-triage pass and return structured JSON-ready summary."""
     status_file = config.data_dir / "auto_status.json"
     checker = mail_running_checker or _is_mail_running
-    if not config.auto_enabled and not dry_run:
+    if not config.auto_enabled and not dry_run and not force:
         return {
             "status": "skipped",
             "reason": "disabled",
@@ -183,7 +217,8 @@ async def _execute_auto_pass(
             mode="inbox",
             sync_mail=True,
         )
-        pairs, warnings = select_auto_actions(snap.items, config, store)
+        pairs, select_warnings = select_auto_actions(snap.items, config, store)
+        warnings = [*snap.warnings, *select_warnings]
         if dry_run:
             return {
                 "status": "dry_run",
@@ -271,6 +306,7 @@ def run_auto_triage(
     bridge: AppleMailBridge,
     *,
     dry_run: bool = False,
+    force: bool = False,
     headless: bool = True,
     allow_private_urls: bool = False,
     mail_running_checker: Optional[Callable[[], bool]] = None,
@@ -282,6 +318,7 @@ def run_auto_triage(
             store,
             bridge,
             dry_run=dry_run,
+            force=force,
             headless=headless,
             allow_private_urls=allow_private_urls,
             mail_running_checker=mail_running_checker,

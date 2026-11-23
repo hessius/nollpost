@@ -102,6 +102,8 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastAutoStatusText: String = "never"
     private var dataDirSource: DispatchSourceFileSystemObject?
     private var dataDirFD: Int32 = -1
+    private var configDirSource: DispatchSourceFileSystemObject?
+    private var configDirFD: Int32 = -1
     private var logHandle: FileHandle?
 
     static func main() {
@@ -117,6 +119,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openLogFile()
         reloadAutoStatus()
         startAutoStatusWatcher()
+        startConfigDirWatcher()
         scheduleAutoTriageTimer()
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -137,6 +140,8 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoTriageTimer = nil
         dataDirSource?.cancel()
         dataDirSource = nil
+        configDirSource?.cancel()
+        configDirSource = nil
         stopStartupIconAnimation()
         stopServerProcess(waitForExit: true)
         try? logHandle?.close()
@@ -1074,6 +1079,28 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         source.resume()
     }
 
+    private func startConfigDirWatcher() {
+        let cfgDir = URL(fileURLWithPath: resolvedConfigPath()).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: cfgDir, withIntermediateDirectories: true)
+        let fd = open(cfgDir.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        configDirFD = fd
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+        source.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.updateIdleAutoStopState()
+                self.rescheduleAutoTimerIfNeeded()
+                self.updateAutoTriageMenuState()
+            }
+        }
+        source.setCancelHandler { [fd] in
+            close(fd)
+        }
+        configDirSource = source
+        source.resume()
+    }
+
     private func reloadAutoStatus() {
         if let data = try? Data(contentsOf: autoStatusFileURL),
            let snap = try? JSONDecoder().decode(AutoStatusSnapshot.self, from: data) {
@@ -1199,11 +1226,36 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func handleInteractiveAutoReport(_ data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let status = (obj["status"] as? String ?? "").lowercased()
+        if status == "error" {
+            let errText = obj["error"] as? String ?? "Unknown error during auto-triage."
+            showAlert(style: .warning, title: "Auto-Triage Failed", message: errText)
+        } else if status == "skipped" {
+            let reason = obj["reason"] as? String ?? "skipped"
+            let msg: String
+            switch reason {
+            case "mail_not_running":
+                msg = "Apple Mail does not appear to be running."
+            case "busy":
+                msg = "Another Nollpost scan or batch run is currently in progress. Please retry in a moment."
+            case "disabled":
+                msg = "Auto-triage is disabled in Settings."
+            default:
+                msg = "Auto-triage was skipped (\(reason))."
+            }
+            showAlert(style: .informational, title: "Auto-Triage Skipped", message: msg)
+        }
+    }
+
     private func runAutoViaLiveServer(boardURL: URL, interactive: Bool) async {
         guard var comps = URLComponents(url: boardURL, resolvingAgainstBaseURL: false) else { return }
         let token = comps.queryItems?.first(where: { $0.name == "key" })?.value ?? ""
         comps.path = "/api/auto/run"
-        comps.query = nil
+        comps.queryItems = [
+            URLQueryItem(name: interactive ? "force" : "background", value: interactive ? "true" : "1"),
+        ]
         guard let endpoint = comps.url else { return }
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
@@ -1216,8 +1268,12 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             let bodyStr = String(decoding: data, as: UTF8.self)
             appendLog("\n--- POST /api/auto/run (\(code)): \(bodyStr) ---\n")
-            if interactive && !(200..<300).contains(code) {
-                showAlert(style: .warning, title: "Auto-Triage Failed", message: "Server returned HTTP \(code).")
+            if interactive {
+                if !(200..<300).contains(code) {
+                    showAlert(style: .warning, title: "Auto-Triage Failed", message: "Server returned HTTP \(code).")
+                } else {
+                    handleInteractiveAutoReport(data)
+                }
             }
         } catch {
             appendLog("\n--- POST /api/auto/run error: \(error.localizedDescription) ---\n")
@@ -1233,11 +1289,12 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         let env = childEnvironment(for: exe)
-        let result: (Int32, String) = await withCheckedContinuation { continuation in
+        let cliArgs = interactive ? ["auto", "--force", "--json"] : ["auto", "--json"]
+        let result: (Int32, Data) = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = exe
-                proc.arguments = ["auto", "--json"]
+                proc.arguments = cliArgs
                 proc.environment = env
                 let outPipe = Pipe()
                 proc.standardOutput = outPipe
@@ -1246,15 +1303,21 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     try proc.run()
                     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
                     proc.waitUntilExit()
-                    continuation.resume(returning: (proc.terminationStatus, String(decoding: data, as: UTF8.self)))
+                    continuation.resume(returning: (proc.terminationStatus, data))
                 } catch {
-                    continuation.resume(returning: (-1, error.localizedDescription))
+                    let msg = Data(error.localizedDescription.utf8)
+                    continuation.resume(returning: (-1, msg))
                 }
             }
         }
-        appendLog("\n--- nollpost auto --json (exit \(result.0)): \(result.1) ---\n")
-        if interactive && result.0 != 0 {
-            showAlert(style: .warning, title: "Auto-Triage Failed", message: result.1)
+        let outputText = String(decoding: result.1, as: UTF8.self)
+        appendLog("\n--- nollpost \(cliArgs.joined(separator: " ")) (exit \(result.0)): \(outputText) ---\n")
+        if interactive {
+            if result.0 != 0 {
+                showAlert(style: .warning, title: "Auto-Triage Failed", message: outputText)
+            } else {
+                handleInteractiveAutoReport(result.1)
+            }
         }
     }
 

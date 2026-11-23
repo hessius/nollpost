@@ -1769,6 +1769,7 @@
         const resEl = qs("results-banner");
         if (resEl) {
           resEl.className = "results-banner";
+          resEl.dataset.kind = "results";
           resEl.textContent = t("digest.restored_ok", { dest: resp.restored_to || "INBOX" });
           resEl.classList.remove("hidden");
         }

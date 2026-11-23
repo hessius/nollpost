@@ -141,13 +141,14 @@ def test_auto_digest_ack_and_status_file(tmp_path: Path):
     store.record_auto_run_status(
         status="ok",
         summary={"archived": 1, "declined": 1, "failed": 0},
-        warnings=[],
+        warnings=["Skipped Gmail under ui_menu"],
         status_file=status_file,
     )
     digest = store.get_auto_digest()
     assert digest["unseen_count"] == 2
     assert digest["max_log_id"] == auto2
     assert digest["summary"] == {"archived": 1, "declined": 1, "failed": 0}
+    assert digest["last_warnings"] == ["Skipped Gmail under ui_menu"]
     assert [it["id"] for it in digest["items"]] == [auto2, auto1]
 
     marker = json.loads(status_file.read_text(encoding="utf-8"))
@@ -160,11 +161,15 @@ def test_auto_digest_ack_and_status_file(tmp_path: Path):
     acked = store.ack_auto_digest(status_file=status_file)
     assert acked["unseen_count"] == 0
     assert acked["ack_log_id"] == auto2
-    assert store.get_auto_digest()["items"] == []
+    assert acked["last_warnings"] == []
+    digest_after_ack = store.get_auto_digest()
+    assert digest_after_ack["items"] == []
+    assert digest_after_ack["last_warnings"] == []
 
     marker_after = json.loads(status_file.read_text(encoding="utf-8"))
     assert marker_after["unseen_count"] == 0
     assert marker_after["ack_log_id"] == auto2
+    assert marker_after["last_warnings"] == []
 
 
 def test_has_auto_failure_suppresses_repeats(tmp_path: Path):
