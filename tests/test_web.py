@@ -939,3 +939,117 @@ def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
 
         marker = _json.loads((cfg.data_dir / "auto_status.json").read_text(encoding="utf-8"))
         assert marker["unseen_count"] == 0
+
+
+def test_auto_digest_banner_and_one_click_rule_in_chromium(tmp_path: Path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+    import uvicorn
+    from playwright.async_api import async_playwright
+
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class UiAutoBridge(FakeBridge):
+        def check_for_new_mail(self) -> bool:
+            return False
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "iCloud":
+                return [
+                    MailHeader("iCloud", "INBOX", "10", "m10", "Card notice", "MyBank <alerts@bank.example>", "alerts@bank.example", "bank.example", "2026-11-23T09:00:00", False, False, 0),
+                ]
+            return []
+
+        def get_raw_source(self, account: str, mailbox: str, internal_id: str) -> bytes:
+            msg = EmailMessage()
+            msg["Subject"] = "Card notice"
+            msg["From"] = "MyBank <alerts@bank.example>"
+            msg.set_content("Transaction notice")
+            return msg.as_bytes()
+
+        def restore_to_inbox(self, account: str, from_mailbox: str, internal_id: str, *, inbox_mailbox: str = "INBOX", rfc_message_id: str = "") -> list[str]:
+            return [internal_id]
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    store.log_action(
+        run_id="auto-20261123",
+        account="iCloud",
+        internal_id="99",
+        sender="MyBank <alerts@bank.example>",
+        subject="Archived bank alert",
+        action="archive",
+        status="ok",
+        detail="Auto-Archive",
+        archive_mailbox="Archive",
+        rfc_message_id="rfc-99",
+        source="auto",
+    )
+    store.record_auto_run_status(
+        status="ok",
+        summary={"archived": 1, "declined": 0, "failed": 0},
+        status_file=cfg.data_dir / "auto_status.json",
+    )
+    app, token = create_app(cfg, store, UiAutoBridge(), token="ui-auto-tok")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    async def _run():
+        try:
+            deadline = time.monotonic() + 10.0
+            while not server.started and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert server.started
+
+            page_errors: list[str] = []
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(locale="en-US")
+                page = await context.new_page()
+                page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+                await page.goto(f"http://127.0.0.1:{port}/?key={token}", wait_until="domcontentloaded")
+                await page.locator("#auto-digest-banner:not(.hidden)").wait_for(timeout=8000)
+                banner_text = await page.locator("#auto-digest-banner").inner_text()
+                assert "Archived bank alert" in banner_text
+
+                # Reload persists banner until explicitly dismissed
+                await page.reload(wait_until="domcontentloaded")
+                await page.locator("#auto-digest-banner:not(.hidden)").wait_for(timeout=8000)
+
+                # One-click Auto (Archive & Summarize) preference on row
+                await page.locator("select.pref-select").first.select_option("auto_archive")
+                await page.locator("span.pill:has-text('Auto-Archive')").first.wait_for(timeout=5000)
+
+                # Explicit dismiss ack clears banner
+                await page.locator("#btn-auto-digest-ack").click()
+                await page.locator("#auto-digest-banner.hidden").wait_for(state="attached", timeout=5000)
+                assert store.get_auto_digest()["unseen_count"] == 0
+
+                # Settings modal exposes automation interval & autopilot toggles
+                await page.locator("#settings-btn").click()
+                await page.locator("#cfg-auto-interval").wait_for(timeout=5000)
+                await page.locator("#cfg-auto-interval").fill("30")
+                await page.locator("#cfg-auto-consult").check()
+                await page.locator("#btn-save-settings").click()
+                await page.locator("#snapshot-modal.hidden").wait_for(state="attached", timeout=5000)
+                reloaded_cfg = load_config(ensure_files=False)
+                assert reloaded_cfg.auto_interval_minutes == 30
+                assert reloaded_cfg.auto_decline_consulting is True
+
+                assert page_errors == []
+                await browser.close()
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            store.close()
+
+    asyncio.run(_run())
