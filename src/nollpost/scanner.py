@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+import time
 from typing import Any, Callable, Optional
 
 from nollpost.classifier import classify_email
@@ -23,6 +24,7 @@ from nollpost.patterns_loader import UnsubPatterns, load_unsub_patterns
 from nollpost.store import TriageStore
 
 EXTRACTOR_VERSION = "v5"
+DEFAULT_SYNC_SETTLE_SECONDS = 2.0
 
 
 def _deserialize_extracted(data: dict[str, Any]) -> ExtractedEmailInfo:
@@ -153,6 +155,8 @@ def run_scan(
     mode: str = "inbox",
     bypass_cache: bool = False,
     on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    sync_mail: bool = True,
+    sync_settle_seconds: float = DEFAULT_SYNC_SETTLE_SECONDS,
 ) -> ScanSnapshot:
     """Scan all configured Mail.app accounts in either 'inbox' or 'catchup' mode."""
     def _emit(phase: str, message: str, done: int = 0, total: int = 0, account: str = "") -> None:
@@ -167,8 +171,17 @@ def run_scan(
                 "account": account,
             })
 
+    sync_triggered = False
+    if mode == "inbox" and sync_mail and hasattr(bridge, "check_for_new_mail"):
+        _emit("sync", "Checking Apple Mail for new mail…")
+        sync_triggered = bool(bridge.check_for_new_mail())
+
     _emit("accounts", "Listing Mail.app accounts…")
     accounts = bridge.list_accounts()
+
+    if mode == "inbox" and sync_triggered and sync_settle_seconds > 0:
+        _emit("sync", "Waiting for Apple Mail to sync…")
+        time.sleep(float(sync_settle_seconds))
     total_accounts = len(accounts)
     items: list[ClassifiedItem] = []
     warnings: list[str] = []

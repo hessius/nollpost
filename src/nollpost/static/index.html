@@ -66,6 +66,25 @@
       <div class="tabs" id="category-tabs"></div>
       <div class="filter-right">
         <div class="tabs" id="account-tabs"></div>
+        <div class="filter-control">
+          <span class="filter-label" data-i18n="filter.group_label">Group:</span>
+          <div class="group-toggle" id="group-by-toggle" role="group" data-i18n-title="filter.group_title" title="Group visible emails">
+            <button type="button" class="tab active" data-group="sender" data-i18n="filter.group_sender">Sender</button>
+            <button type="button" class="tab" data-group="category" data-i18n="filter.group_category">Category</button>
+            <button type="button" class="tab" data-group="none" data-i18n="filter.group_none">None</button>
+          </div>
+        </div>
+        <div class="filter-control">
+          <label for="sort-by-select" class="filter-label" data-i18n="filter.sort_label">Sort:</label>
+          <select id="sort-by-select" class="filter-select" data-i18n-title="filter.sort_title" title="Sort emails and groups">
+            <option value="date_desc" data-i18n="filter.sort_date_desc" selected>Newest first</option>
+            <option value="date_asc" data-i18n="filter.sort_date_asc">Oldest first</option>
+            <option value="sender_asc" data-i18n="filter.sort_sender_asc">Sender (A-Z)</option>
+            <option value="subject_asc" data-i18n="filter.sort_subject_asc">Subject (A-Z)</option>
+            <option value="count_desc" data-i18n="filter.sort_count_desc">Most messages</option>
+            <option value="unread_first" data-i18n="filter.sort_unread_first">Unread first</option>
+          </select>
+        </div>
         <label class="toggle-check">
           <input type="checkbox" id="unread-only-toggle" />
           <span data-i18n="filter.unread_only">Unread only</span>

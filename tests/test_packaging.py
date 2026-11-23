@@ -68,6 +68,8 @@ def test_homebrew_formula_structure_and_updater(tmp_path: Path):
     assert "Open at Login" in menu_swift
     assert "startupIconTimer" in menu_swift
     assert "strokeFractions" in menu_swift
+    assert "urlWithRefreshParam" in menu_swift
+    assert "openApplication(at: mailURL" in menu_swift
 
     sample = tmp_path / "sample.tar.gz"
     sample.write_bytes(b"nollpost-release-tarball")

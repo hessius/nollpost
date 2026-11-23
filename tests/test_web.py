@@ -546,3 +546,283 @@ def test_serve_startup_nonblocking_preload_and_terminal_guidance(tmp_path: Path,
     with TestClient(app_cancel):
         pass
     assert opened_cmds == []
+
+
+def test_preload_syncs_new_mail_before_scan_and_disables_api_http_cache(tmp_path: Path, monkeypatch):
+    _setup_test_env(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("nollpost.scanner.time.sleep", lambda _s: None)
+
+    class WakeSyncBridge(FakeBridge):
+        def __init__(self):
+            super().__init__()
+            self.sync_calls = 0
+            self.synced = False
+
+        def check_for_new_mail(self, timeout: int = 8) -> bool:
+            self.sync_calls += 1
+            self.synced = True
+            return True
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            base = super().scan_mailbox_metadata(account, mailbox, limit, include_attachments, days_back)
+            if account == "iCloud" and self.synced:
+                base.append(
+                    MailHeader(
+                        "iCloud",
+                        "INBOX",
+                        "12",
+                        "m12",
+                        "Brand New Mail",
+                        "New <new@example.com>",
+                        "new@example.com",
+                        "example.com",
+                        "2026-11-23T09:00:00",
+                        False,
+                        False,
+                        0,
+                    )
+                )
+            return base
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    bridge = WakeSyncBridge()
+    app, token = create_app(cfg, store, bridge, token="wake-tok", preload=True)
+    with TestClient(app) as client:
+        st = client.get("/api/state", headers={"X-Triage-Key": token})
+        assert st.status_code == 200
+        assert st.headers.get("cache-control") == "no-store"
+        uids = {item["uid"] for item in st.json()["items"]}
+        assert "iCloud:INBOX:12" in uids
+        assert bridge.sync_calls == 1
+
+        # Post-execute rescan skips redundant check_for_new_mail
+        run = client.post(
+            "/api/execute/run",
+            headers={"X-Triage-Key": token},
+            json={"mode": "inbox", "items": [{"uid": "iCloud:INBOX:10", "action": "archive"}]},
+        )
+        assert run.status_code == 200
+        job_id = run.json()["job_id"]
+        for _ in range(100):
+            j = client.get(f"/api/jobs/{job_id}", headers={"X-Triage-Key": token}).json()
+            if j["status"] == "completed":
+                break
+            time.sleep(0.05)
+        assert j["status"] == "completed"
+        assert bridge.sync_calls == 1
+
+        app_js = client.get("/static/app.js").text
+        assert 'cache: "no-store"' in app_js
+        assert 'params.get("refresh") === "1"' in app_js
+    store.close()
+
+
+def test_same_sender_action_offer_in_chromium(tmp_path: Path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+    import uvicorn
+    from playwright.async_api import async_playwright
+
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class MultiSenderBridge(FakeBridge):
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "iCloud":
+                return [
+                    MailHeader("iCloud", "INBOX", "10", "m10", "Deal One", "Shop <info@shop.example>", "info@shop.example", "shop.example", "2026-11-19T12:00:00", False, False, 0),
+                    MailHeader("iCloud", "INBOX", "11", "m11", "Deal Two", "Shop <info@shop.example>", "info@shop.example", "shop.example", "2026-11-19T12:01:00", False, False, 0),
+                    MailHeader("iCloud", "INBOX", "12", "m12", "Deal Three", "Shop <info@shop.example>", "info@shop.example", "shop.example", "2026-11-19T12:02:00", False, False, 0),
+                ]
+            return super().scan_mailbox_metadata(account, mailbox, limit, include_attachments, days_back)
+
+        def get_raw_source(self, account: str, mailbox: str, internal_id: str) -> bytes:
+            if internal_id in ("10", "11", "12"):
+                msg = EmailMessage()
+                msg["Subject"] = f"Deal {internal_id}"
+                msg["From"] = "Shop <info@shop.example>"
+                msg["List-Unsubscribe"] = "<https://shop.example/unsub>"
+                msg.set_content("Avprenumerera")
+                msg.add_alternative("<a href='https://shop.example/unsub'>Avprenumerera</a>", subtype="html")
+                return msg.as_bytes()
+            return super().get_raw_source(account, mailbox, internal_id)
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, MultiSenderBridge(), token="sender-offer-tok")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    async def _run():
+        try:
+            deadline = time.monotonic() + 10.0
+            while not server.started and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert server.started
+
+            page_errors: list[str] = []
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(locale="en-US")
+                page = await context.new_page()
+                page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+                await page.goto(f"http://127.0.0.1:{port}/?key={token}&refresh=1", wait_until="domcontentloaded")
+                await page.locator("text=Deal One").wait_for(timeout=8000)
+                # ?refresh=1 stripped cleanly after initial load
+                assert "refresh=1" not in page.url
+
+                # All 3 Shop emails default to archive_and_unsub
+                for uid in ("iCloud:INBOX:10", "iCloud:INBOX:11", "iCloud:INBOX:12"):
+                    btn = page.locator(f'button[data-uid="{uid}"][data-act="archive_and_unsub"]')
+                    assert "active" in (await btn.get_attribute("class") or "")
+
+                # Switch #10 from archive_and_unsub -> archive; offer appears for the 2 others
+                await page.locator('button[data-uid="iCloud:INBOX:10"][data-act="archive"]').click()
+                offer = page.locator(".sender-apply-offer")
+                await offer.wait_for(state="visible", timeout=3000)
+                offer_text = await offer.inner_text()
+                assert "2 other messages" in offer_text
+                assert "Archive" in offer_text
+
+                # Applying switches #11 and #12 to archive, clears offer, leaves Google:INBOX:20 untouched
+                await page.locator("[data-apply-sender-offer]").click()
+                assert await offer.count() == 0
+                for uid in ("iCloud:INBOX:10", "iCloud:INBOX:11", "iCloud:INBOX:12"):
+                    btn = page.locator(f'button[data-uid="{uid}"][data-act="archive"]')
+                    assert "active" in (await btn.get_attribute("class") or "")
+                other_btn = page.locator('button[data-uid="Google:INBOX:20"][data-act="archive"]')
+                assert "active" not in (await other_btn.get_attribute("class") or "")
+
+                # Switching #10 to mark_read shows offer again; dismissing leaves #11/#12 on archive
+                await page.locator('button[data-uid="iCloud:INBOX:10"][data-act="mark_read"]').click()
+                await offer.wait_for(state="visible", timeout=3000)
+                await page.locator("[data-dismiss-sender-offer]").click()
+                assert await offer.count() == 0
+                for uid in ("iCloud:INBOX:11", "iCloud:INBOX:12"):
+                    btn = page.locator(f'button[data-uid="{uid}"][data-act="archive"]')
+                    assert "active" in (await btn.get_attribute("class") or "")
+
+                assert page_errors == []
+                await browser.close()
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            store.close()
+
+    asyncio.run(_run())
+
+
+def test_sort_and_group_by_controls_in_chromium(tmp_path: Path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+    import uvicorn
+    from playwright.async_api import async_playwright
+
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class SortGroupBridge(FakeBridge):
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "iCloud":
+                return [
+                    MailHeader("iCloud", "INBOX", "10", "m10", "Alpha Deal", "Shop <info@shop.example>", "info@shop.example", "shop.example", "2026-11-19T10:00:00", True, False, 0),
+                    MailHeader("iCloud", "INBOX", "11", "m11", "Zebra Deal", "Shop <info@shop.example>", "info@shop.example", "shop.example", "2026-11-19T12:00:00", False, False, 0),
+                ]
+            return [
+                MailHeader("Google", "INBOX", "20", "m20", "Beta Release", "Creator <hello@creator.example>", "hello@creator.example", "creator.example", "2026-11-19T11:00:00", True, False, 0),
+            ]
+
+        def get_raw_source(self, account: str, mailbox: str, internal_id: str) -> bytes:
+            if internal_id in ("10", "11"):
+                msg = EmailMessage()
+                msg["Subject"] = "Alpha Deal" if internal_id == "10" else "Zebra Deal"
+                msg["From"] = "Shop <info@shop.example>"
+                msg["List-Unsubscribe"] = "<https://shop.example/unsub>"
+                msg.set_content("Avprenumerera")
+                msg.add_alternative("<a href='https://shop.example/unsub'>Avprenumerera</a>", subtype="html")
+                return msg.as_bytes()
+            return super().get_raw_source(account, mailbox, internal_id)
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, SortGroupBridge(), token="sort-group-tok")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    async def _run():
+        try:
+            deadline = time.monotonic() + 10.0
+            while not server.started and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert server.started
+
+            page_errors: list[str] = []
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(locale="en-US")
+                page = await context.new_page()
+                page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+                await page.goto(f"http://127.0.0.1:{port}/?key={token}", wait_until="domcontentloaded")
+                await page.locator("text=Zebra Deal").wait_for(timeout=8000)
+
+                # Default: grouped by sender, sorted newest first
+                sender_btn = page.locator('#group-by-toggle button[data-group="sender"]')
+                assert "active" in (await sender_btn.get_attribute("class") or "")
+                assert await page.locator("tr.group-header-row").count() == 1
+                assert "2 messages" in (await page.locator("tr.group-header-row").first.inner_text())
+
+                subjects = await page.locator("tbody tr:not(.group-header-row) td:nth-child(4) strong").all_inner_texts()
+                assert subjects == ["Zebra Deal", "Alpha Deal", "Beta Release"]
+
+                # Group checkbox selects all rows in Shop group (2 items; 1 has non-noop default action)
+                await page.locator("input.group-cb").first.check()
+                assert await page.locator("input.row-cb:checked").count() == 2
+                assert "Execute Selected (1)" in (await page.locator("#btn-exec-selected").inner_text())
+
+                # Switch Group to Category: 2 category groups (Newsletters & Bots, Updates & Comments)
+                await page.locator('#group-by-toggle button[data-group="category"]').click()
+                assert await page.locator("tr.group-header-row").count() == 2
+
+                # Switch Group to None and sort Subject (A-Z)
+                await page.locator('#group-by-toggle button[data-group="none"]').click()
+                assert await page.locator("tr.group-header-row").count() == 0
+                await page.locator("#sort-by-select").select_option("subject_asc")
+                subjects_az = await page.locator("tbody tr td:nth-child(4) strong").all_inner_texts()
+                assert subjects_az == ["Alpha Deal", "Beta Release", "Zebra Deal"]
+
+                # Sort Oldest first
+                await page.locator("#sort-by-select").select_option("date_asc")
+                subjects_oldest = await page.locator("tbody tr td:nth-child(4) strong").all_inner_texts()
+                assert subjects_oldest == ["Alpha Deal", "Beta Release", "Zebra Deal"]
+
+                # Sort Unread first (Zebra Deal is unread, others are read)
+                await page.locator("#sort-by-select").select_option("unread_first")
+                subjects_unread = await page.locator("tbody tr td:nth-child(4) strong").all_inner_texts()
+                assert subjects_unread[0] == "Zebra Deal"
+
+                assert page_errors == []
+                await browser.close()
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            store.close()
+
+    asyncio.run(_run())

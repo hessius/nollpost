@@ -303,3 +303,24 @@ def test_executor_skips_timeout_inbox_reconcile_in_background_gmail_mode(tmp_pat
     assert results[0].status == "failed"
     assert "verified moved" not in results[0].detail
     store.close()
+
+
+def test_check_for_new_mail_triggers_fetch_and_handles_timeout(monkeypatch):
+    scripts: list[str] = []
+
+    def fake_ok(script: str, timeout: int = 120) -> str:
+        scripts.append(script)
+        return ""
+
+    monkeypatch.setattr("nollpost.mail_bridge.run_osascript", fake_ok)
+    bridge = AppleMailBridge()
+    assert bridge.check_for_new_mail(timeout=5) is True
+    assert len(scripts) == 1
+    assert "check for new mail" in scripts[0]
+    assert "with timeout of 5 seconds" in scripts[0]
+
+    def fake_fail(script: str, timeout: int = 120) -> str:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("nollpost.mail_bridge.run_osascript", fake_fail)
+    assert bridge.check_for_new_mail(timeout=5) is False

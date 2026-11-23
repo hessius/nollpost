@@ -1,5 +1,24 @@
 (() => {
   const CATEGORY_IDS = ["all", "attention", "updates", "consulting", "newsletters", "missed"];
+  const GROUP_OPTIONS = ["sender", "category", "none"];
+  const SORT_OPTIONS = ["date_desc", "date_asc", "sender_asc", "subject_asc", "count_desc", "unread_first"];
+
+  function readSavedPref(key, allowed, fallback) {
+    try {
+      const val = window.localStorage ? window.localStorage.getItem(key) : null;
+      return val && allowed.includes(val) ? val : fallback;
+    } catch (_ignored) {
+      return fallback;
+    }
+  }
+
+  function savePref(key, value) {
+    try {
+      if (window.localStorage) window.localStorage.setItem(key, value);
+    } catch (_ignored) {
+      // Ignore storage errors
+    }
+  }
 
   const state = {
     locale: "en",
@@ -8,11 +27,15 @@
     mode: "inbox",
     category: "all",
     account: "all",
+    groupBy: readSavedPref("nollpost_group_by", GROUP_OPTIONS, "sender"),
+    sortBy: readSavedPref("nollpost_sort_by", SORT_OPTIONS, "date_desc"),
     unreadOnly: false,
     search: "",
     data: null,
     selectedUids: new Set(),
     actionsByUid: new Map(),
+    senderActionOffer: null,
+    renderedGroups: [],
     confirmCallback: null,
     lastJobResults: [],
     loadSeq: 0,
@@ -205,6 +228,7 @@
   async function api(path, options = {}) {
     const resp = await fetch(path, {
       credentials: "same-origin",
+      cache: "no-store",
       headers: { "Content-Type": "application/json", ...(options.headers || {}) },
       ...options,
     });
@@ -213,6 +237,32 @@
       throw new Error(txt || `HTTP ${resp.status}`);
     }
     return resp.json();
+  }
+
+  function senderGroupKey(item) {
+    const h = item?.header || {};
+    const email = String(h.sender_email || "").trim().toLowerCase();
+    if (email) return email;
+    const dom = String(h.sender_domain || "").trim().toLowerCase();
+    if (dom) return dom;
+    return String(h.sender || "").trim().toLowerCase();
+  }
+
+  function itemSupportsAction(item, act) {
+    return act === "no_action" || (Array.isArray(item?.allowed_actions) && item.allowed_actions.includes(act));
+  }
+
+  function findSwitchableSenderItems(sourceItem, act) {
+    if (state.mode !== "inbox" || !sourceItem) return [];
+    const key = senderGroupKey(sourceItem);
+    if (!key) return [];
+    return (state.data?.items || []).filter((other) => {
+      if (other.uid === sourceItem.uid) return false;
+      if (senderGroupKey(other) !== key) return false;
+      if (!itemSupportsAction(other, act)) return false;
+      const otherAct = state.actionsByUid.get(other.uid) || other.default_action;
+      return otherAct !== act;
+    });
   }
 
   function hydrateActionsFromData(data) {
@@ -226,6 +276,7 @@
       }
     }
     state.actionsByUid = nextMap;
+    state.senderActionOffer = null;
     const validUids = new Set((data.items || []).map((i) => i.uid));
     state.selectedUids = new Set([...state.selectedUids].filter((u) => validUids.has(u)));
   }
@@ -365,6 +416,14 @@
         )
         .join("");
     }
+
+    for (const btn of document.querySelectorAll("#group-by-toggle button[data-group]")) {
+      btn.classList.toggle("active", btn.getAttribute("data-group") === state.groupBy);
+    }
+    const sortEl = qs("sort-by-select");
+    if (sortEl && sortEl.value !== state.sortBy) {
+      sortEl.value = state.sortBy;
+    }
   }
 
   function pickBestMissedLink(m) {
@@ -424,6 +483,192 @@
       </table>`;
   }
 
+  function senderSortLabel(item) {
+    return String(item?.header?.sender || item?.header?.sender_email || "").trim().toLowerCase();
+  }
+
+  function compareItems(a, b, sortBy) {
+    const da = String(a?.header?.date_received || "");
+    const db = String(b?.header?.date_received || "");
+    const dateDesc = db.localeCompare(da);
+    if (sortBy === "date_asc") {
+      return da.localeCompare(db) || String(a.uid).localeCompare(String(b.uid));
+    }
+    if (sortBy === "sender_asc") {
+      return senderSortLabel(a).localeCompare(senderSortLabel(b), undefined, { sensitivity: "base" }) || dateDesc;
+    }
+    if (sortBy === "subject_asc") {
+      const sa = String(a?.header?.subject || "");
+      const sb = String(b?.header?.subject || "");
+      return sa.localeCompare(sb, undefined, { sensitivity: "base" }) || dateDesc;
+    }
+    if (sortBy === "count_desc") {
+      const ca = Number(a?.group_count || 1);
+      const cb = Number(b?.group_count || 1);
+      return (cb - ca) || senderSortLabel(a).localeCompare(senderSortLabel(b), undefined, { sensitivity: "base" }) || dateDesc;
+    }
+    if (sortBy === "unread_first") {
+      const ua = a?.header?.is_read ? 1 : 0;
+      const ub = b?.header?.is_read ? 1 : 0;
+      return (ua - ub) || dateDesc;
+    }
+    return dateDesc || String(a.uid).localeCompare(String(b.uid));
+  }
+
+  function buildDisplayGroups(items, groupBy, sortBy) {
+    const sorted = [...items].sort((a, b) => compareItems(a, b, sortBy));
+    if (groupBy === "none") {
+      return [{ key: "__none__", label: "", items: sorted, showHeader: false, unreadCount: 0 }];
+    }
+    const buckets = new Map();
+    for (const item of sorted) {
+      const rawKey = groupBy === "category" ? (item.category || "other") : (senderGroupKey(item) || item.uid);
+      let grp = buckets.get(rawKey);
+      if (!grp) {
+        const label = groupBy === "category"
+          ? categoryLabel(rawKey)
+          : String(item?.header?.sender || rawKey);
+        grp = {
+          key: rawKey,
+          label,
+          items: [],
+          newestDate: "",
+          oldestDate: "",
+          unreadCount: 0,
+          maxGroupCount: 1,
+        };
+        buckets.set(rawKey, grp);
+      }
+      grp.items.push(item);
+      const dt = String(item?.header?.date_received || "");
+      if (!grp.newestDate || dt > grp.newestDate) grp.newestDate = dt;
+      if (!grp.oldestDate || (dt && dt < grp.oldestDate)) grp.oldestDate = dt;
+      if (!item?.header?.is_read) grp.unreadCount += 1;
+      grp.maxGroupCount = Math.max(grp.maxGroupCount, Number(item?.group_count || 1));
+    }
+    const groups = [...buckets.values()].map((g) => ({
+      ...g,
+      showHeader: groupBy === "category" || g.items.length > 1,
+    }));
+    groups.sort((a, b) => {
+      const dateDesc = b.newestDate.localeCompare(a.newestDate);
+      if (sortBy === "date_asc") {
+        return a.oldestDate.localeCompare(b.oldestDate) || dateDesc;
+      }
+      if (sortBy === "sender_asc") {
+        return a.label.localeCompare(b.label, undefined, { sensitivity: "base" }) || dateDesc;
+      }
+      if (sortBy === "subject_asc") {
+        const sa = String(a.items[0]?.header?.subject || "");
+        const sb = String(b.items[0]?.header?.subject || "");
+        return sa.localeCompare(sb, undefined, { sensitivity: "base" }) || dateDesc;
+      }
+      if (sortBy === "count_desc") {
+        return (b.items.length - a.items.length) || (b.maxGroupCount - a.maxGroupCount) || dateDesc;
+      }
+      if (sortBy === "unread_first") {
+        return ((b.unreadCount > 0 ? 0 : 1) - (a.unreadCount > 0 ? 0 : 1)) || dateDesc;
+      }
+      return dateDesc || a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+    });
+    return groups;
+  }
+
+  function renderItemRow(item) {
+    const h = item.header;
+    const checked = state.selectedUids.has(item.uid);
+    const curAction = state.actionsByUid.get(item.uid) || item.default_action;
+    const acctCls = accountToneClass(h.account);
+    const catPillCls =
+      item.category === "attention"
+        ? "warn"
+        : item.category === "updates"
+        ? "green"
+        : item.category === "consulting"
+        ? "accent"
+        : "muted";
+
+    const badgesHtml = (item.badges || [])
+      .map((b) => `<span class="pill ${b.includes("Sent after") || b.includes("No unsub") ? "warn" : "muted"}">${escapeHtml(b)}</span>`)
+      .join("");
+    const countBadge = item.group_count > 1 ? `<span class="pill accent">${item.group_count}×</span>` : "";
+
+    const buttonsOrder =
+      state.mode === "catchup"
+        ? ["no_action", "unsub_only"]
+        : [
+            "no_action",
+            "mark_read",
+            ...(item.allowed_actions.includes("read_show_invoice") ? ["read_show_invoice"] : []),
+            ...(item.allowed_actions.includes("read_open_link") ? ["read_open_link"] : []),
+            ...(item.allowed_actions.includes("decline_and_archive") ? ["decline_and_archive"] : []),
+            ...(item.allowed_actions.includes("draft_decline") ? ["draft_decline", "send_decline_and_archive"] : []),
+            "archive",
+            "archive_and_unsub",
+          ];
+
+    const segHtml = buttonsOrder
+      .map((act) => {
+        const allowed = item.allowed_actions.includes(act);
+        const active = curAction === act;
+        let title = "";
+        if (!allowed && act === "archive_and_unsub") {
+          title = t("row.disabled_unsub_title");
+        } else if (act === "read_open_link" && item.extracted?.pertinent_url) {
+          title = item.extracted.pertinent_url;
+        }
+        return `<button class="${active ? "active" : ""}" ${!allowed ? "disabled" : ""} title="${escapeHtml(title)}" data-uid="${escapeHtml(item.uid)}" data-act="${act}">${escapeHtml(actionLabel(act))}</button>`;
+      })
+      .join("");
+
+    const queueMissedBtn =
+      item.no_unsub_found && state.mode === "inbox"
+        ? `<button class="btn small" data-enqueue-missed="${escapeHtml(item.uid)}">${escapeHtml(t("row.queue_missed"))}</button>`
+        : "";
+
+    let offerHtml = "";
+    const offer = state.senderActionOffer;
+    if (offer && offer.uid === item.uid && Array.isArray(offer.targetUids) && offer.targetUids.length > 0) {
+      const count = offer.targetUids.length;
+      const promptKey = count === 1 ? "row.apply_sender_prompt_one" : "row.apply_sender_prompt_other";
+      offerHtml = `
+        <div class="sender-apply-offer" role="status">
+          <span>${tHtml(promptKey, { count, action: `<strong>${escapeHtml(actionLabel(offer.action))}</strong>` }, ["action"])}</span>
+          <span class="sender-apply-offer-actions">
+            <button type="button" class="btn tiny primary" data-apply-sender-offer="1">${escapeHtml(t("row.apply_sender_btn", { count }))}</button>
+            <button type="button" class="btn tiny secondary" data-dismiss-sender-offer="1" title="${escapeHtml(t("row.apply_sender_dismiss"))}" aria-label="${escapeHtml(t("row.apply_sender_dismiss"))}">&times;</button>
+          </span>
+        </div>`;
+    }
+
+    return `
+    <tr class="${checked ? "selected-row" : ""} ${h.is_read ? "read-row" : "unread-row"}">
+      <td><input type="checkbox" class="row-cb" data-uid="${escapeHtml(item.uid)}" ${checked ? "checked" : ""} /></td>
+      <td><span class="acct ${acctCls}">${escapeHtml(h.account)}</span></td>
+      <td>
+        <span class="pill ${catPillCls}">${escapeHtml(item.subcategory)}</span>
+        ${countBadge}
+      </td>
+      <td>
+        <strong>${escapeHtml(h.subject || t("row.no_subject"))}</strong>
+        <div class="sub-meta">
+          <span>${escapeHtml(h.sender)}</span>
+          <span>· ${escapeHtml((h.date_received || "").slice(0, 16).replace("T", " "))}</span>
+          ${badgesHtml}
+          <select class="pref-select" data-pref-email="${escapeHtml(h.sender_email)}" data-pref-dom="${escapeHtml(h.sender_domain)}" data-pref-name="${escapeHtml(h.sender)}">
+            <option value="">${escapeHtml(t("pref.remember"))}</option>
+            <option value="always_keep">${escapeHtml(t("pref.always_keep"))}</option>
+            <option value="archive">${escapeHtml(t("pref.always_archive"))}</option>
+            <option value="mark_read">${escapeHtml(t("pref.always_mark_read"))}</option>
+            <option value="clear">${escapeHtml(t("pref.clear"))}</option>
+          </select>
+          ${queueMissedBtn}
+        </div>
+      </td>
+      <td><div class="seg">${segHtml}</div>${offerHtml}</td>
+    </tr>`;
+  }
+
   function renderTable() {
     if (state.category === "missed") {
       renderMissedQueue();
@@ -431,6 +676,7 @@
     }
     const rowsData = filteredItems();
     if (!rowsData.length) {
+      state.renderedGroups = [];
       const allItems = state.data?.items || [];
       const warnings = state.data?.warnings || [];
       if (warnings.length && !allItems.length) {
@@ -463,86 +709,33 @@
       return;
     }
     const allVisibleSelected = rowsData.every((i) => state.selectedUids.has(i.uid));
+    const groups = buildDisplayGroups(rowsData, state.groupBy, state.sortBy);
+    state.renderedGroups = groups;
 
-    const rowsHtml = rowsData
-      .map((item) => {
-        const h = item.header;
-        const checked = state.selectedUids.has(item.uid);
-        const curAction = state.actionsByUid.get(item.uid) || item.default_action;
-        const acctCls = accountToneClass(h.account);
-        const catPillCls =
-          item.category === "attention"
-            ? "warn"
-            : item.category === "updates"
-            ? "green"
-            : item.category === "consulting"
-            ? "accent"
-            : "muted";
-
-        const badgesHtml = (item.badges || [])
-          .map((b) => `<span class="pill ${b.includes("Sent after") || b.includes("No unsub") ? "warn" : "muted"}">${escapeHtml(b)}</span>`)
-          .join("");
-        const countBadge = item.group_count > 1 ? `<span class="pill accent">${item.group_count}×</span>` : "";
-
-        const buttonsOrder =
-          state.mode === "catchup"
-            ? ["no_action", "unsub_only"]
-            : [
-                "no_action",
-                "mark_read",
-                ...(item.allowed_actions.includes("read_show_invoice") ? ["read_show_invoice"] : []),
-                ...(item.allowed_actions.includes("read_open_link") ? ["read_open_link"] : []),
-                ...(item.allowed_actions.includes("decline_and_archive") ? ["decline_and_archive"] : []),
-                ...(item.allowed_actions.includes("draft_decline") ? ["draft_decline", "send_decline_and_archive"] : []),
-                "archive",
-                "archive_and_unsub",
-              ];
-
-        const segHtml = buttonsOrder
-          .map((act) => {
-            const allowed = item.allowed_actions.includes(act);
-            const active = curAction === act;
-            let title = "";
-            if (!allowed && act === "archive_and_unsub") {
-              title = t("row.disabled_unsub_title");
-            } else if (act === "read_open_link" && item.extracted?.pertinent_url) {
-              title = item.extracted.pertinent_url;
-            }
-            return `<button class="${active ? "active" : ""}" ${!allowed ? "disabled" : ""} title="${escapeHtml(title)}" data-uid="${escapeHtml(item.uid)}" data-act="${act}">${escapeHtml(actionLabel(act))}</button>`;
-          })
-          .join("");
-
-        const queueMissedBtn =
-          item.no_unsub_found && state.mode === "inbox"
-            ? `<button class="btn small" data-enqueue-missed="${escapeHtml(item.uid)}">${escapeHtml(t("row.queue_missed"))}</button>`
+    const rowsHtml = groups
+      .map((grp, grpIdx) => {
+        let headerRow = "";
+        if (grp.showHeader) {
+          const grpSelected = grp.items.every((i) => state.selectedUids.has(i.uid));
+          const cntLabel = grp.items.length === 1
+            ? t("group.count_one")
+            : t("group.count_other", { count: grp.items.length });
+          const unreadPill = grp.unreadCount > 0
+            ? `<span class="pill warn">${escapeHtml(t("group.unread", { count: grp.unreadCount }))}</span>`
             : "";
-
-        return `
-        <tr class="${checked ? "selected-row" : ""} ${h.is_read ? "read-row" : "unread-row"}">
-          <td><input type="checkbox" class="row-cb" data-uid="${escapeHtml(item.uid)}" ${checked ? "checked" : ""} /></td>
-          <td><span class="acct ${acctCls}">${escapeHtml(h.account)}</span></td>
-          <td>
-            <span class="pill ${catPillCls}">${escapeHtml(item.subcategory)}</span>
-            ${countBadge}
-          </td>
-          <td>
-            <strong>${escapeHtml(h.subject || t("row.no_subject"))}</strong>
-            <div class="sub-meta">
-              <span>${escapeHtml(h.sender)}</span>
-              <span>· ${escapeHtml((h.date_received || "").slice(0, 16).replace("T", " "))}</span>
-              ${badgesHtml}
-              <select class="pref-select" data-pref-email="${escapeHtml(h.sender_email)}" data-pref-dom="${escapeHtml(h.sender_domain)}" data-pref-name="${escapeHtml(h.sender)}">
-                <option value="">${escapeHtml(t("pref.remember"))}</option>
-                <option value="always_keep">${escapeHtml(t("pref.always_keep"))}</option>
-                <option value="archive">${escapeHtml(t("pref.always_archive"))}</option>
-                <option value="mark_read">${escapeHtml(t("pref.always_mark_read"))}</option>
-                <option value="clear">${escapeHtml(t("pref.clear"))}</option>
-              </select>
-              ${queueMissedBtn}
-            </div>
-          </td>
-          <td><div class="seg">${segHtml}</div></td>
-        </tr>`;
+          headerRow = `
+          <tr class="group-header-row" data-group-key="${escapeHtml(grp.key)}">
+            <td><input type="checkbox" class="group-cb" data-group-idx="${grpIdx}" title="${escapeHtml(t("group.select_all"))}" aria-label="${escapeHtml(t("group.select_all"))}" ${grpSelected ? "checked" : ""} /></td>
+            <td colspan="4">
+              <div class="group-header-inner">
+                <span class="group-header-title">${escapeHtml(grp.label)}</span>
+                <span class="pill accent">${escapeHtml(cntLabel)}</span>
+                ${unreadPill}
+              </div>
+            </td>
+          </tr>`;
+        }
+        return headerRow + grp.items.map(renderItemRow).join("");
       })
       .join("");
 
@@ -1574,6 +1767,12 @@
         render();
         return;
       }
+      if (target.dataset.group && GROUP_OPTIONS.includes(target.dataset.group)) {
+        state.groupBy = target.dataset.group;
+        savePref("nollpost_group_by", state.groupBy);
+        render();
+        return;
+      }
       if (target.dataset.mode) {
         state.mode = target.dataset.mode;
         state.category = "all";
@@ -1581,7 +1780,39 @@
         return;
       }
       if (target.dataset.uid && target.dataset.act) {
-        state.actionsByUid.set(target.dataset.uid, target.dataset.act);
+        const uid = target.dataset.uid;
+        const nextAct = target.dataset.act;
+        const item = (state.data?.items || []).find((i) => i.uid === uid);
+        const prevAct = item ? (state.actionsByUid.get(uid) || item.default_action) : state.actionsByUid.get(uid);
+        state.actionsByUid.set(uid, nextAct);
+        if (item && nextAct !== prevAct) {
+          const switchable = findSwitchableSenderItems(item, nextAct);
+          state.senderActionOffer = switchable.length
+            ? { uid, senderKey: senderGroupKey(item), action: nextAct, targetUids: switchable.map((i) => i.uid) }
+            : null;
+        } else {
+          state.senderActionOffer = null;
+        }
+        render();
+        return;
+      }
+      if (target.dataset.applySenderOffer) {
+        const offer = state.senderActionOffer;
+        if (offer) {
+          const byUid = new Map((state.data?.items || []).map((i) => [i.uid, i]));
+          for (const targetUid of offer.targetUids || []) {
+            const targetItem = byUid.get(targetUid);
+            if (targetItem && itemSupportsAction(targetItem, offer.action)) {
+              state.actionsByUid.set(targetUid, offer.action);
+            }
+          }
+          state.senderActionOffer = null;
+          render();
+        }
+        return;
+      }
+      if (target.dataset.dismissSenderOffer) {
+        state.senderActionOffer = null;
         render();
         return;
       }
@@ -1717,6 +1948,25 @@
         render();
         return;
       }
+      if (target.classList.contains("group-cb") && target instanceof HTMLInputElement && target.dataset.groupIdx !== undefined) {
+        const grp = state.renderedGroups[Number(target.dataset.groupIdx)];
+        if (grp) {
+          for (const item of grp.items) {
+            if (target.checked) state.selectedUids.add(item.uid);
+            else state.selectedUids.delete(item.uid);
+          }
+          render();
+        }
+        return;
+      }
+      if (target.id === "sort-by-select" && target instanceof HTMLSelectElement) {
+        if (SORT_OPTIONS.includes(target.value)) {
+          state.sortBy = target.value;
+          savePref("nollpost_sort_by", state.sortBy);
+          render();
+        }
+        return;
+      }
       if (target.classList.contains("row-cb") && target instanceof HTMLInputElement && target.dataset.uid) {
         if (target.checked) state.selectedUids.add(target.dataset.uid);
         else state.selectedUids.delete(target.dataset.uid);
@@ -1819,6 +2069,7 @@
     for (const item of filteredItems()) {
       state.actionsByUid.set(item.uid, "no_action");
     }
+    state.senderActionOffer = null;
     render();
   });
   qs("btn-exec-selected").addEventListener("click", () => {
@@ -1865,13 +2116,21 @@
   qs("snap-close").addEventListener("click", () => qs("snapshot-modal").classList.add("hidden"));
 
   (async () => {
+    const params = new URLSearchParams(window.location.search);
+    const forceInitialRefresh = params.get("refresh") === "1";
+    if (forceInitialRefresh && window.history && typeof window.history.replaceState === "function") {
+      params.delete("refresh");
+      const qsStr = params.toString();
+      const cleanUrl = `${window.location.pathname}${qsStr ? `?${qsStr}` : ""}${window.location.hash || ""}`;
+      window.history.replaceState(null, "", cleanUrl);
+    }
     try {
       await loadI18n();
     } catch (_i18nErr) {
       // Fall back to static English DOM strings if locale fetch fails
     }
     checkForUpdates(false);
-    await loadState(false);
+    await loadState(forceInitialRefresh);
   })().catch((err) => {
     showError(err.message);
   });
