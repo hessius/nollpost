@@ -360,3 +360,123 @@ def test_default_config_is_neutral_and_validates_gmail_strategy(tmp_path: Path, 
     cfg_path.write_text('[accounts]\ngmail_archive_strategy = "invalid_mode"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="gmail_archive_strategy"):
         load_config(ensure_files=False)
+
+
+def test_auto_archive_overrides_plain_bank_alert_and_bill_keywords(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config(ensure_files=False)
+
+    bank_mem = SenderMemoryRecord(
+        sender_key="alerts@mybank.example",
+        display_name="MyBank Alerts",
+        preferred_action="auto_archive",
+        keep_subscribed=True,
+        unsubscribed_at=None,
+        unsub_count=0,
+        last_seen_at="2026-11-23T10:00:00+00:00",
+    )
+
+    # Plain bank alert with generic bill keyword ("receipt") and no List-Unsubscribe header
+    item = classify_email(
+        _hdr("Card payment receipt", "MyBank <alerts@mybank.example>", "alerts@mybank.example", "mybank.example"),
+        ExtractedEmailInfo(plain_excerpt="You spent 120 SEK at Cafe."),
+        cfg,
+        "Archive",
+        sender_mem=bank_mem,
+    )
+    assert item.default_action == "archive"
+    assert item.subcategory == "Auto-Archive"
+    assert item.learned_preference == "auto_archive"
+    assert "Auto-Archive" in item.badges
+
+
+def test_auto_archive_respects_security_pdf_and_gov_guardrails(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text('[rules]\nenabled_packs = ["se"]\n', encoding="utf-8")
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config(ensure_files=False)
+
+    bank_mem = SenderMemoryRecord(
+        sender_key="alerts@mybank.example",
+        display_name="MyBank",
+        preferred_action="auto_archive",
+        keep_subscribed=True,
+        unsubscribed_at=None,
+        unsub_count=0,
+        last_seen_at="2026-11-23T10:00:00+00:00",
+    )
+
+    sec_item = classify_email(
+        _hdr("Security Alert: New login", "MyBank <alerts@mybank.example>", "alerts@mybank.example", "mybank.example"),
+        ExtractedEmailInfo(plain_excerpt="Verification code: 123456"),
+        cfg,
+        "Archive",
+        sender_mem=bank_mem,
+    )
+    assert sec_item.category == "attention"
+    assert sec_item.subcategory == "Security Alert"
+    assert sec_item.default_action != "archive"
+
+    pdf_item = classify_email(
+        _hdr("Monthly statement", "MyBank <alerts@mybank.example>", "alerts@mybank.example", "mybank.example"),
+        ExtractedEmailInfo(pdf_attachments=[PdfAttachment("statement.pdf", 1, 2048)]),
+        cfg,
+        "Archive",
+        sender_mem=bank_mem,
+    )
+    assert pdf_item.category == "attention"
+    assert pdf_item.default_action == "read_show_invoice"
+
+    kivra_mem = SenderMemoryRecord(
+        sender_key="no-reply@kivra.com",
+        display_name="Kivra",
+        preferred_action="auto_archive",
+        keep_subscribed=True,
+        unsubscribed_at=None,
+        unsub_count=0,
+        last_seen_at="2026-11-23T10:00:00+00:00",
+    )
+    gov_item = classify_email(
+        _hdr("Nytt brev", "Kivra <no-reply@kivra.com>", "no-reply@kivra.com", "kivra.com"),
+        ExtractedEmailInfo(),
+        cfg,
+        "Archive",
+        sender_mem=kivra_mem,
+    )
+    assert gov_item.category == "attention"
+    assert gov_item.subcategory == "Gov / Kivra"
+
+
+def test_always_archive_with_auto_flag_applies_to_non_newsletter(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("[automation]\nauto_archive_always_archive = true\n", encoding="utf-8")
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config(ensure_files=False)
+
+    mem = SenderMemoryRecord(
+        sender_key="notices@svc.example",
+        display_name="Service Notice",
+        preferred_action="archive",
+        keep_subscribed=True,
+        unsubscribed_at=None,
+        unsub_count=0,
+        last_seen_at="2026-11-23T10:00:00+00:00",
+    )
+    item = classify_email(
+        _hdr("Weekly summary", "Service <notices@svc.example>", "notices@svc.example", "svc.example"),
+        ExtractedEmailInfo(plain_excerpt="Your weekly status summary is ready."),
+        cfg,
+        "Archive",
+        sender_mem=mem,
+    )
+    assert item.default_action == "archive"
+    assert item.learned_preference == "archive"
+    assert item.subcategory == "Remembered Archive"
