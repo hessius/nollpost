@@ -118,8 +118,11 @@ class BatchExecutor:
         account_addresses: dict[str, list[str]],
         headless: bool = True,
         on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+        source: str = "manual",
+        run_id_prefix: str = "",
     ) -> list[ExecutionItemResult]:
-        run_id = uuid.uuid4().hex[:10]
+        raw_id = uuid.uuid4().hex[:10]
+        run_id = f"{run_id_prefix}{raw_id}" if run_id_prefix else raw_id
         results: list[ExecutionItemResult] = []
         stage1_total = sum(1 for _, act in items_with_actions if act != "no_action")
         mail_est = sum(
@@ -269,7 +272,13 @@ class BatchExecutor:
                     )
 
             elif action == "archive":
-                if item.category == "newsletters" and item.extracted.unsub_target is None and item.extracted.newsletter_signals:
+                if (
+                    source != "auto"
+                    and item.subcategory not in ("Auto-Archive", "Remembered Archive")
+                    and item.category == "newsletters"
+                    and item.extracted.unsub_target is None
+                    and item.extracted.newsletter_signals
+                ):
                     self.store.enqueue_missed_unsubscribe(
                         account=h.account,
                         mailbox=h.mailbox,
@@ -662,6 +671,7 @@ class BatchExecutor:
                 detail=res.detail,
                 archive_mailbox=archived_dest,
                 rfc_message_id=src_item.header.rfc_message_id if src_item else "",
+                source=source,
             )
 
         return results

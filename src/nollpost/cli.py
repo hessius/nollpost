@@ -10,6 +10,7 @@ import sys
 
 import uvicorn
 
+from nollpost.auto_runner import run_auto_triage
 from nollpost.config import TriageConfig, get_cache_dir, get_config_path, get_data_dir, load_config
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts
 from nollpost.missed_export import format_missed_bug_report, redact_missed_entry
@@ -59,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     scan_p = sub.add_parser("scan", help="Scan all configured Apple Mail accounts")
     scan_p.add_argument("--mode", choices=["inbox", "catchup"], default="inbox")
     scan_p.add_argument("--json", action="store_true", dest="as_json")
+
+    auto_p = sub.add_parser("auto", help="Run one headless auto-triage pass for eligible rules")
+    auto_p.add_argument("--dry-run", action="store_true", help="Preview eligible auto-actions without executing")
+    auto_p.add_argument("--json", action="store_true", dest="as_json")
 
     serve_p = sub.add_parser("serve", help="Start the local 127.0.0.1 Review Board web app")
     serve_p.add_argument("--port", type=int, default=0, help="Port to bind (default: random free port)")
@@ -161,6 +166,32 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_briefing_text(data)
         return 0
+
+    if args.command == "auto":
+        report = run_auto_triage(config, store, bridge, dry_run=args.dry_run)
+        if args.as_json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            status = report.get("status", "unknown")
+            if status == "dry_run":
+                planned = report.get("planned") or []
+                print(f"Auto-Triage Dry Run: {len(planned)} planned action(s)")
+                for it in planned:
+                    print(f"  - [{it['account']}] {it['action']}: {it['subject']} ({it['sender']})")
+            elif status == "skipped":
+                print(f"Auto-Triage skipped ({report.get('reason', 'unknown')})")
+            elif status == "error":
+                print(f"Auto-Triage failed: {report.get('error', 'unknown error')}", file=sys.stderr)
+            else:
+                summ = report.get("summary") or {}
+                print(
+                    f"Auto-Triage complete: {summ.get('archived', 0)} archived, "
+                    f"{summ.get('declined', 0)} declined, {summ.get('failed', 0)} failed "
+                    f"({report.get('unseen_count', 0)} unseen in digest)"
+                )
+            for w in report.get("warnings") or []:
+                print(f"  ! {w}")
+        return 1 if report.get("status") == "error" else 0
 
     if args.command == "stats":
         print(json.dumps(store.get_stats(), indent=2))
