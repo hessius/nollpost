@@ -826,3 +826,116 @@ def test_sort_and_group_by_controls_in_chromium(tmp_path: Path, monkeypatch):
             store.close()
 
     asyncio.run(_run())
+
+
+def test_auto_preferences_and_settings_endpoints(tmp_path: Path, monkeypatch):
+    _setup_test_env(tmp_path, monkeypatch)
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, FakeBridge(), token="auto-pref-tok")
+    headers = {"X-Triage-Key": token}
+
+    with TestClient(app) as client:
+        pref = client.post(
+            "/api/preferences",
+            headers=headers,
+            json={
+                "sender_email": "alerts@bank.example",
+                "sender_domain": "bank.example",
+                "display_name": "MyBank",
+                "preference": "auto_archive",
+            },
+        )
+        assert pref.status_code == 200
+        rules = client.get("/api/sender-memory?kind=auto_archive", headers=headers).json()
+        assert [r["sender_key"] for r in rules["items"]] == ["alerts@bank.example"]
+
+        bulk = client.post(
+            "/api/sender-memory/bulk",
+            headers=headers,
+            json={"sender_keys": ["other@bank.example"], "action": "auto_archive"},
+        )
+        assert bulk.status_code == 200
+        assert len(client.get("/api/sender-memory?kind=auto_archive", headers=headers).json()["items"]) == 2
+
+        settings_before = client.get("/api/settings", headers=headers).json()
+        assert settings_before["automation"]["interval_minutes"] == 60
+        assert settings_before["automation"]["auto_decline_consulting"] is False
+
+        put_res = client.put(
+            "/api/settings",
+            headers=headers,
+            json={
+                "automation": {
+                    "interval_minutes": 30,
+                    "auto_decline_consulting": True,
+                    "auto_archive_transactional": True,
+                }
+            },
+        )
+        assert put_res.status_code == 200
+        assert put_res.json()["settings"]["automation"]["interval_minutes"] == 30
+        assert put_res.json()["settings"]["automation"]["auto_decline_consulting"] is True
+
+
+def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class AutoWebBridge(FakeBridge):
+        def check_for_new_mail(self) -> bool:
+            return False
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "iCloud":
+                return [
+                    MailHeader("iCloud", "INBOX", "10", "m10", "Card notice", "MyBank <alerts@bank.example>", "alerts@bank.example", "bank.example", "2026-11-23T09:00:00", False, False, 0),
+                ]
+            return []
+
+        def get_raw_source(self, account: str, mailbox: str, internal_id: str) -> bytes:
+            msg = EmailMessage()
+            msg["Subject"] = "Card notice"
+            msg["From"] = "MyBank <alerts@bank.example>"
+            msg.set_content("Transaction notice")
+            return msg.as_bytes()
+
+        def mark_read_and_archive(self, account: str, mailbox: str, archive_mailbox: str, internal_ids: list[str], *, mark_read: bool = True) -> list[str]:
+            return list(internal_ids)
+
+        def synchronize_account(self, account: str, timeout: int = 8) -> None:
+            return None
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    store.record_sender_preference("alerts@bank.example", "MyBank", "auto_archive", keep_subscribed=True)
+    app, token = create_app(cfg, store, AutoWebBridge(), token="auto-run-tok")
+    headers = {"X-Triage-Key": token}
+
+    with TestClient(app) as client:
+        run_res = client.post("/api/auto/run", headers=headers)
+        assert run_res.status_code == 200
+        run_data = run_res.json()
+        assert run_data["status"] == "ok"
+        assert run_data["summary"] == {"archived": 1, "declined": 0, "failed": 0}
+        assert run_data["unseen_count"] == 1
+
+        digest = client.get("/api/auto/digest", headers=headers).json()
+        assert digest["unseen_count"] == 1
+        assert [it["subject"] for it in digest["items"]] == ["Card notice"]
+
+        auto_logs = client.get("/api/audit-log?source=auto", headers=headers).json()
+        assert len(auto_logs["items"]) == 1
+        assert auto_logs["items"][0]["source"] == "auto"
+
+        ack = client.post("/api/auto/ack", headers=headers, json={"max_log_id": digest["max_log_id"]})
+        assert ack.status_code == 200
+        assert ack.json()["unseen_count"] == 0
+
+        digest_after = client.get("/api/auto/digest", headers=headers).json()
+        assert digest_after["unseen_count"] == 0
+        assert digest_after["items"] == []
+
+        marker = _json.loads((cfg.data_dir / "auto_status.json").read_text(encoding="utf-8"))
+        assert marker["unseen_count"] == 0

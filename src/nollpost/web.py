@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from nollpost.auto_runner import _is_mail_running, acquire_run_lock, async_run_auto_triage
 from nollpost.config import VALID_GMAIL_ARCHIVE_STRATEGIES, TriageConfig, update_config_file
 from nollpost.executor import BatchExecutor
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts, validate_archive_destination
@@ -185,6 +186,11 @@ class SettingsUpdateRequest(BaseModel):
     browser: Optional[dict[str, Any]] = None
     consulting: Optional[dict[str, Any]] = None
     profile: Optional[dict[str, Any]] = None
+    automation: Optional[dict[str, Any]] = None
+
+
+class AutoAckRequest(BaseModel):
+    max_log_id: Optional[int] = None
 
 
 class SenderMemoryBulkRequest(BaseModel):
@@ -268,16 +274,21 @@ class AppRuntime:
                     self.scan_progress = dict(prog)
 
                 try:
-                    snap = await asyncio.to_thread(
-                        run_scan,
-                        self.config,
-                        self.store,
-                        self.bridge,
-                        mode=mode,
-                        bypass_cache=bypass_cache,
-                        on_progress=_on_progress,
-                        sync_mail=sync_mail,
-                    )
+                    def _scan_locked():
+                        with acquire_run_lock(self.config.data_dir, wait_seconds=10.0) as got_lock:
+                            if not got_lock:
+                                raise RuntimeError("Another Nollpost scan/auto-triage run is currently busy")
+                            return run_scan(
+                                self.config,
+                                self.store,
+                                self.bridge,
+                                mode=mode,
+                                bypass_cache=bypass_cache,
+                                on_progress=_on_progress,
+                                sync_mail=sync_mail,
+                            )
+
+                    snap = await asyncio.to_thread(_scan_locked)
                 finally:
                     self.scan_progress = {
                         "active": False,
@@ -490,7 +501,7 @@ def create_app(
                 preferred_action=None,
                 keep_subscribed=False,
             )
-        elif req.preference in ("always_keep", "archive", "mark_read"):
+        elif req.preference in ("always_keep", "auto_archive", "archive", "mark_read"):
             runtime.store.record_sender_preference(
                 sender_email=req.sender_email,
                 sender_domain=req.sender_domain,
@@ -562,6 +573,18 @@ def create_app(
                 "transactional_domains": list(cfg.transactional_domains),
                 "bill_keywords": list(cfg.bill_keywords),
             },
+            "automation": {
+                "enabled": cfg.auto_enabled,
+                "interval_minutes": cfg.auto_interval_minutes,
+                "auto_archive_sender_rules": cfg.auto_archive_sender_rules,
+                "auto_decline_consulting": cfg.auto_decline_consulting,
+                "auto_archive_transactional": cfg.auto_archive_transactional,
+                "auto_archive_bot_noise": cfg.auto_archive_bot_noise,
+                "auto_archive_always_archive": cfg.auto_archive_always_archive,
+                "auto_archive_recent_unsubs": cfg.auto_archive_recent_unsubs,
+                "skip_security_alerts": cfg.auto_skip_security_alerts,
+                "skip_pdf_invoices": cfg.auto_skip_pdf_invoices,
+            },
         }
 
     @app.get("/api/settings")
@@ -595,7 +618,7 @@ def create_app(
 
     @app.post("/api/sender-memory/bulk")
     async def api_bulk_sender_memory(req: SenderMemoryBulkRequest) -> dict[str, Any]:
-        if req.action not in ("always_keep", "archive", "mark_read", "clear", "delete"):
+        if req.action not in ("always_keep", "auto_archive", "archive", "mark_read", "clear", "delete"):
             raise HTTPException(status_code=400, detail="Invalid sender memory action")
         keys = [runtime.store.normalize_sender_key(k) for k in req.sender_keys if str(k).strip()]
         if not keys:
@@ -921,14 +944,51 @@ def create_app(
         status: str = "all",
         run_id: str = "",
         search: str = "",
+        source: str = "all",
         limit: int = 200,
     ) -> dict[str, Any]:
         return runtime.store.list_action_log(
             status=status,
             run_id=run_id,
             search=search,
+            source=source,
             limit=limit,
         )
+
+    @app.get("/api/auto/digest")
+    async def api_auto_digest(limit: int = 100) -> dict[str, Any]:
+        return runtime.store.get_auto_digest(limit=limit)
+
+    @app.post("/api/auto/ack")
+    async def api_auto_ack(req: Optional[AutoAckRequest] = None) -> dict[str, Any]:
+        max_id = req.max_log_id if req is not None else None
+        status_file = runtime.config.data_dir / "auto_status.json"
+        return runtime.store.ack_auto_digest(max_log_id=max_id, status_file=status_file)
+
+    @app.post("/api/auto/run")
+    async def api_auto_run(dry_run: bool = False) -> dict[str, Any]:
+        mail_checker = _is_mail_running if type(runtime.bridge) is AppleMailBridge else (lambda: True)
+        async with runtime.scan_lock:
+            with acquire_run_lock(runtime.config.data_dir) as got_lock:
+                if not got_lock:
+                    return {
+                        "status": "skipped",
+                        "reason": "busy",
+                        "unseen_count": runtime.store.get_auto_digest()["unseen_count"],
+                    }
+                report = await async_run_auto_triage(
+                    runtime.config,
+                    runtime.store,
+                    runtime.bridge,
+                    dry_run=dry_run,
+                    headless=True,
+                    allow_private_urls=allow_private_urls,
+                    mail_running_checker=mail_checker,
+                    acquire_lock=False,
+                )
+            if report.get("executed", 0):
+                runtime.snapshots.clear()
+        return report
 
     @app.post("/api/audit-log/{entry_id}/undo")
     async def api_undo_archive(entry_id: int) -> dict[str, Any]:

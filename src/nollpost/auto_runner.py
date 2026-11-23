@@ -27,18 +27,26 @@ def _is_mail_running() -> bool:
 
 
 @contextmanager
-def acquire_run_lock(data_dir: Path) -> Iterator[bool]:
-    """Acquire non-blocking exclusive flock on `<data_dir>/run.lock`."""
+def acquire_run_lock(data_dir: Path, *, wait_seconds: float = 0.0) -> Iterator[bool]:
+    """Acquire exclusive flock on `<data_dir>/run.lock`, optionally waiting up to `wait_seconds`."""
+    import time
+
     data_dir.mkdir(parents=True, exist_ok=True)
     lock_path = data_dir / "run.lock"
     fh = lock_path.open("a+", encoding="utf-8")
     acquired = False
+    deadline = time.monotonic() + max(0.0, float(wait_seconds))
     try:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except BlockingIOError:
-            acquired = False
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    acquired = False
+                    break
+                time.sleep(0.05)
         yield acquired
     finally:
         if acquired:
