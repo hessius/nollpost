@@ -50,16 +50,33 @@ private enum ServerState: Equatable {
     }
 }
 
+private struct AutoStatusSnapshot: Decodable {
+    let unseenCount: Int
+    let lastRunAt: String?
+    let lastStatus: String?
+    let lastError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case unseenCount = "unseen_count"
+        case lastRunAt = "last_run_at"
+        case lastStatus = "last_status"
+        case lastError = "last_error"
+    }
+}
+
 @main
 @MainActor
 final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var stateMenuItem: NSMenuItem!
+    private var autoStatusMenuItem: NSMenuItem!
     private var updateNoticeMenuItem: NSMenuItem!
     private var openBoardMenuItem: NSMenuItem!
+    private var runAutoNowMenuItem: NSMenuItem!
     private var startStopMenuItem: NSMenuItem!
     private var restartMenuItem: NSMenuItem!
     private var idleModeMenuItem: NSMenuItem!
+    private var pauseAutoMenuItem: NSMenuItem!
     private var launchAtLoginMenuItem: NSMenuItem!
 
     private var serverProcess: Process?
@@ -70,12 +87,21 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var latestAvailableVersion: String?
     private var idleAutoStopped = false
     private let idleDisabledKey = "idleAutoStopDisabled"
+    private let autoPausedKey = "autoTriagePaused"
     private var lineBuffer = ""
     private var recentLogLines: [String] = []
     private var pendingBrowserOpen = false
     private var readyCheckTimer: Timer?
     private var startupIconTimer: Timer?
     private var startupAnimStart: Date?
+    private var autoTriageTimer: Timer?
+    private var scheduledAutoIntervalMinutes: Int = 60
+    private var isAutoRunInFlight = false
+    private var unseenAutoCount: Int = 0
+    private var lastAutoRunAtISO: String?
+    private var lastAutoStatusText: String = "never"
+    private var dataDirSource: DispatchSourceFileSystemObject?
+    private var dataDirFD: Int32 = -1
     private var logHandle: FileHandle?
 
     static func main() {
@@ -89,6 +115,15 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildStatusMenu()
         openLogFile()
+        reloadAutoStatus()
+        startAutoStatusWatcher()
+        scheduleAutoTriageTimer()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemDidWake(_:)),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
         updateMenuState()
         updateLaunchAtLoginState()
         if !isUpdateCheckDisabledByUser() {
@@ -97,6 +132,11 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        autoTriageTimer?.invalidate()
+        autoTriageTimer = nil
+        dataDirSource?.cancel()
+        dataDirSource = nil
         stopStartupIconAnimation()
         stopServerProcess(waitForExit: true)
         try? logHandle?.close()
@@ -125,7 +165,8 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private nonisolated static func makeSnabelNollMenuIcon(
-        strokeFractions: (zero: CGFloat, swirl: CGFloat, slash: CGFloat)? = nil
+        strokeFractions: (zero: CGFloat, swirl: CGFloat, slash: CGFloat)? = nil,
+        showBadgeDot: Bool = false
     ) -> NSImage {
         let fractions = strokeFractions ?? (zero: 1.0, swirl: 1.0, slash: 1.0)
         let img = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { rect in
@@ -172,6 +213,16 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             slash.lineCapStyle = .butt
             strokePath(slash, length: 171.0 * scale, fraction: fractions.slash)
 
+            if showBadgeDot {
+                let haloRect = NSRect(x: 12.6, y: 0.4, width: 5.0, height: 5.0)
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: haloRect).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                NSColor.black.setFill()
+                let dotRect = NSRect(x: 13.4, y: 1.2, width: 3.4, height: 3.4)
+                NSBezierPath(ovalIn: dotRect).fill()
+            }
+
             return true
         }
         img.isTemplate = true
@@ -192,6 +243,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stateMenuItem.isEnabled = false
         menu.addItem(stateMenuItem)
 
+        autoStatusMenuItem = NSMenuItem(title: "Auto-Triage: Idle", action: nil, keyEquivalent: "")
+        autoStatusMenuItem.isEnabled = false
+        menu.addItem(autoStatusMenuItem)
+
         updateNoticeMenuItem = NSMenuItem(title: "", action: #selector(showUpdatePrompt(_:)), keyEquivalent: "")
         updateNoticeMenuItem.target = self
         updateNoticeMenuItem.isHidden = true
@@ -201,6 +256,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openBoardMenuItem = NSMenuItem(title: "Open Review Board", action: #selector(openReviewBoard(_:)), keyEquivalent: "o")
         openBoardMenuItem.target = self
         menu.addItem(openBoardMenuItem)
+
+        runAutoNowMenuItem = NSMenuItem(title: "Run Auto-Triage Now", action: #selector(runAutoTriageNow(_:)), keyEquivalent: "t")
+        runAutoNowMenuItem.target = self
+        menu.addItem(runAutoNowMenuItem)
 
         startStopMenuItem = NSMenuItem(title: "Start Server", action: #selector(toggleServer(_:)), keyEquivalent: "")
         startStopMenuItem.target = self
@@ -236,6 +295,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idleModeMenuItem.target = self
         menu.addItem(idleModeMenuItem)
 
+        pauseAutoMenuItem = NSMenuItem(title: "Pause Auto-Triage", action: #selector(togglePauseAutoTriage(_:)), keyEquivalent: "")
+        pauseAutoMenuItem.target = self
+        menu.addItem(pauseAutoMenuItem)
+
         launchAtLoginMenuItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
         launchAtLoginMenuItem.target = self
         menu.addItem(launchAtLoginMenuItem)
@@ -253,7 +316,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        reloadAutoStatus()
+        rescheduleAutoTimerIfNeeded()
         updateIdleAutoStopState()
+        updateAutoTriageMenuState()
         updateLaunchAtLoginState()
     }
 
@@ -371,7 +437,22 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             restartMenuItem?.isEnabled = false
             openBoardMenuItem?.title = "Start & Open Review Board"
         }
+        updateAutoTriageMenuState()
         updateStartupIconAnimation()
+    }
+
+    private func updateMenuBarIconAndTooltip() {
+        guard serverState != .starting, let button = statusItem?.button else {
+            return
+        }
+        let icon = Self.makeSnabelNollMenuIcon(showBadgeDot: unseenAutoCount > 0)
+        icon.accessibilityDescription = unseenAutoCount > 0
+            ? "Nollpost (\(unseenAutoCount) unseen auto-actions)"
+            : "Nollpost"
+        button.image = icon
+        button.toolTip = unseenAutoCount > 0
+            ? "Nollpost — \(unseenAutoCount) auto-action(s) since last review"
+            : "Nollpost Morning Mail Triage"
     }
 
     private func updateStartupIconAnimation() {
@@ -420,10 +501,11 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startupIconTimer = nil
         startupAnimStart = nil
         if let button = statusItem?.button {
-            let icon = Self.makeSnabelNollMenuIcon()
+            let icon = Self.makeSnabelNollMenuIcon(showBadgeDot: unseenAutoCount > 0)
             icon.accessibilityDescription = "Nollpost"
             button.image = icon
         }
+        updateMenuBarIconAndTooltip()
     }
 
     private var logFileURL: URL {
@@ -901,7 +983,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nollpostCfg
     }
 
-    private func userSectionConfigValue(for targetKey: String) -> String? {
+    private func sectionConfigValue(section targetSection: String, key targetKey: String) -> String? {
         guard let text = try? String(contentsOfFile: resolvedConfigPath(), encoding: .utf8) else {
             return nil
         }
@@ -922,7 +1004,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     .trimmingCharacters(in: .whitespaces)
                 continue
             }
-            guard currentSection == "user" else { continue }
+            guard currentSection == targetSection else { continue }
             let uncommented = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
                 .trimmingCharacters(in: .whitespaces)
             guard let eqIdx = uncommented.firstIndex(of: "=") else { continue }
@@ -933,6 +1015,247 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         return nil
+    }
+
+    private func userSectionConfigValue(for targetKey: String) -> String? {
+        sectionConfigValue(section: "user", key: targetKey)
+    }
+
+    private func resolvedDataDirURL() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        let fm = FileManager.default
+        if let raw = env["NOLLPOST_DATA_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            return URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        let appSupport = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
+        let primary = appSupport.appendingPathComponent("nollpost", isDirectory: true)
+        let legacy = appSupport.appendingPathComponent("mail-triage", isDirectory: true)
+        if !fm.fileExists(atPath: primary.path) && fm.fileExists(atPath: legacy.path) {
+            return legacy
+        }
+        return primary
+    }
+
+    private var autoStatusFileURL: URL {
+        resolvedDataDirURL().appendingPathComponent("auto_status.json")
+    }
+
+    private func isAutoTriageEnabledInConfig() -> Bool {
+        sectionConfigValue(section: "automation", key: "enabled")?.lowercased() != "false"
+    }
+
+    private func configuredAutoIntervalMinutes() -> Int {
+        guard let raw = sectionConfigValue(section: "automation", key: "interval_minutes"), let mins = Int(raw) else {
+            return 60
+        }
+        return max(1, min(1440, mins))
+    }
+
+    private func isAutoTriagePaused() -> Bool {
+        UserDefaults.standard.bool(forKey: autoPausedKey)
+    }
+
+    private func startAutoStatusWatcher() {
+        let dirURL = resolvedDataDirURL()
+        try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+        let fd = open(dirURL.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        dataDirFD = fd
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+        source.setEventHandler { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.reloadAutoStatus()
+            }
+        }
+        source.setCancelHandler { [fd] in
+            close(fd)
+        }
+        dataDirSource = source
+        source.resume()
+    }
+
+    private func reloadAutoStatus() {
+        if let data = try? Data(contentsOf: autoStatusFileURL),
+           let snap = try? JSONDecoder().decode(AutoStatusSnapshot.self, from: data) {
+            unseenAutoCount = max(0, snap.unseenCount)
+            lastAutoRunAtISO = snap.lastRunAt
+            lastAutoStatusText = snap.lastStatus ?? "ok"
+        } else {
+            unseenAutoCount = 0
+        }
+        updateAutoTriageMenuState()
+        updateMenuBarIconAndTooltip()
+    }
+
+    private func updateAutoTriageMenuState() {
+        let interval = configuredAutoIntervalMinutes()
+        let paused = isAutoTriagePaused()
+        let cfgEnabled = isAutoTriageEnabledInConfig()
+        pauseAutoMenuItem?.state = paused ? .on : .off
+        pauseAutoMenuItem?.isEnabled = cfgEnabled
+        runAutoNowMenuItem?.isEnabled = !isAutoRunInFlight
+
+        if isAutoRunInFlight {
+            autoStatusMenuItem?.title = "Auto-Triage: Running..."
+        } else if !cfgEnabled {
+            autoStatusMenuItem?.title = "Auto-Triage: Disabled in Settings"
+        } else if paused {
+            autoStatusMenuItem?.title = unseenAutoCount > 0
+                ? "Auto-Triage: Paused (\(unseenAutoCount) unseen)"
+                : "Auto-Triage: Paused"
+        } else if unseenAutoCount > 0 {
+            autoStatusMenuItem?.title = "Auto-Triage: \(unseenAutoCount) new in summary (Every \(interval)m)"
+        } else if lastAutoStatusText == "error" {
+            autoStatusMenuItem?.title = "Auto-Triage: Last run failed (Every \(interval)m)"
+        } else {
+            autoStatusMenuItem?.title = "Auto-Triage: Active (Every \(interval)m)"
+        }
+    }
+
+    private func scheduleAutoTriageTimer() {
+        autoTriageTimer?.invalidate()
+        autoTriageTimer = nil
+        let intervalMins = configuredAutoIntervalMinutes()
+        scheduledAutoIntervalMinutes = intervalMins
+        guard isAutoTriageEnabledInConfig() && !isAutoTriagePaused() else { return }
+        let secs = TimeInterval(intervalMins * 60)
+        autoTriageTimer = Timer.scheduledTimer(withTimeInterval: secs, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.runAutoTriage(interactive: false)
+            }
+        }
+    }
+
+    private func rescheduleAutoTimerIfNeeded() {
+        let currentMins = configuredAutoIntervalMinutes()
+        let shouldBeRunning = isAutoTriageEnabledInConfig() && !isAutoTriagePaused()
+        if (autoTriageTimer != nil) != shouldBeRunning || currentMins != scheduledAutoIntervalMinutes {
+            scheduleAutoTriageTimer()
+        }
+    }
+
+    @objc private func handleSystemDidWake(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self else { return }
+            self.reloadAutoStatus()
+            guard self.isAutoTriageEnabledInConfig() && !self.isAutoTriagePaused() else { return }
+            let intervalSecs = TimeInterval(self.configuredAutoIntervalMinutes() * 60)
+            let due: Bool
+            if let iso = self.lastAutoRunAtISO,
+               let dt = ISO8601DateFormatter().date(from: iso) {
+                due = Date().timeIntervalSince(dt) >= intervalSecs
+            } else {
+                due = true
+            }
+            if due {
+                await self.runAutoTriage(interactive: false)
+            }
+        }
+    }
+
+    @objc private func togglePauseAutoTriage(_ sender: Any?) {
+        let nextPaused = !isAutoTriagePaused()
+        UserDefaults.standard.set(nextPaused, forKey: autoPausedKey)
+        scheduleAutoTriageTimer()
+        updateAutoTriageMenuState()
+    }
+
+    @objc private func runAutoTriageNow(_ sender: Any?) {
+        Task { @MainActor [weak self] in
+            await self?.runAutoTriage(interactive: true)
+        }
+    }
+
+    private func runAutoTriage(interactive: Bool) async {
+        guard !isAutoRunInFlight else { return }
+        if !interactive {
+            guard isAutoTriageEnabledInConfig() && !isAutoTriagePaused() else { return }
+            let mailRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.mail").isEmpty
+            guard mailRunning else { return }
+            let autoPerm = await Self.queryMailAutomationPermission(prompt: false)
+            guard case .granted = autoPerm else { return }
+        } else {
+            guard await promptIfAutomationMissingBeforeLaunch() else { return }
+        }
+
+        isAutoRunInFlight = true
+        updateAutoTriageMenuState()
+        defer {
+            isAutoRunInFlight = false
+            reloadAutoStatus()
+            rescheduleAutoTimerIfNeeded()
+        }
+
+        switch serverState {
+        case .running(let url):
+            await runAutoViaLiveServer(boardURL: url, interactive: interactive)
+        case .starting:
+            if interactive {
+                showAlert(style: .informational, title: "Server Starting", message: "The Review Board server is starting up. Try again in a moment.")
+            }
+        case .stopped, .idleStopped, .failed:
+            await runAutoViaCLI(interactive: interactive)
+        }
+    }
+
+    private func runAutoViaLiveServer(boardURL: URL, interactive: Bool) async {
+        guard var comps = URLComponents(url: boardURL, resolvingAgainstBaseURL: false) else { return }
+        let token = comps.queryItems?.first(where: { $0.name == "key" })?.value ?? ""
+        comps.path = "/api/auto/run"
+        comps.query = nil
+        guard let endpoint = comps.url else { return }
+        var req = URLRequest(url: endpoint)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 180.0
+        if !token.isEmpty {
+            req.setValue(token, forHTTPHeaderField: "X-Triage-Key")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let bodyStr = String(decoding: data, as: UTF8.self)
+            appendLog("\n--- POST /api/auto/run (\(code)): \(bodyStr) ---\n")
+            if interactive && !(200..<300).contains(code) {
+                showAlert(style: .warning, title: "Auto-Triage Failed", message: "Server returned HTTP \(code).")
+            }
+        } catch {
+            appendLog("\n--- POST /api/auto/run error: \(error.localizedDescription) ---\n")
+            if interactive {
+                showAlert(style: .warning, title: "Auto-Triage Failed", message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func runAutoViaCLI(interactive: Bool) async {
+        guard let exe = resolveNollpostExecutable() else {
+            if interactive { showMissingBinaryAlert() }
+            return
+        }
+        let env = childEnvironment(for: exe)
+        let result: (Int32, String) = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = exe
+                proc.arguments = ["auto", "--json"]
+                proc.environment = env
+                let outPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError = outPipe
+                do {
+                    try proc.run()
+                    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
+                    continuation.resume(returning: (proc.terminationStatus, String(decoding: data, as: UTF8.self)))
+                } catch {
+                    continuation.resume(returning: (-1, error.localizedDescription))
+                }
+            }
+        }
+        appendLog("\n--- nollpost auto --json (exit \(result.0)): \(result.1) ---\n")
+        if interactive && result.0 != 0 {
+            showAlert(style: .warning, title: "Auto-Triage Failed", message: result.1)
+        }
     }
 
     private func isUpdateCheckDisabledByUser() -> Bool {

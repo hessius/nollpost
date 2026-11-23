@@ -70,6 +70,11 @@ def test_homebrew_formula_structure_and_updater(tmp_path: Path):
     assert "strokeFractions" in menu_swift
     assert "urlWithRefreshParam" in menu_swift
     assert "openApplication(at: mailURL" in menu_swift
+    assert "auto_status.json" in menu_swift
+    assert "autoTriageTimer" in menu_swift
+    assert "showBadgeDot" in menu_swift
+    assert "Run Auto-Triage Now" in menu_swift
+    assert "Pause Auto-Triage" in menu_swift
 
     sample = tmp_path / "sample.tar.gz"
     sample.write_bytes(b"nollpost-release-tarball")
