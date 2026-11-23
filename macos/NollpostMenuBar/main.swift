@@ -535,12 +535,13 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    private func ensureMailRunningIfNeeded() {
+    private func ensureMailRunningIfNeeded() async {
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.mail")
         if running.isEmpty, let mailURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail") {
             let cfg = NSWorkspace.OpenConfiguration()
             cfg.activates = false
-            NSWorkspace.shared.openApplication(at: mailURL, configuration: cfg, completionHandler: nil)
+            _ = try? await NSWorkspace.shared.openApplication(at: mailURL, configuration: cfg)
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
     }
 
@@ -550,7 +551,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .granted:
             return true
         case .mailNotRunning:
-            ensureMailRunningIfNeeded()
+            await ensureMailRunningIfNeeded()
             return true
         case .denied, .consentRequired, .error:
             let alert = NSAlert()
@@ -576,10 +577,22 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func urlWithRefreshParam(_ url: URL) -> URL {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        var items = comps.queryItems ?? []
+        if !items.contains(where: { $0.name == "refresh" }) {
+            items.append(URLQueryItem(name: "refresh", value: "1"))
+        }
+        comps.queryItems = items
+        return comps.url ?? url
+    }
+
     @objc private func openReviewBoard(_ sender: Any?) {
         switch serverState {
         case .running(let url):
-            NSWorkspace.shared.open(url)
+            NSWorkspace.shared.open(urlWithRefreshParam(url))
             return
         case .starting:
             pendingBrowserOpen = true

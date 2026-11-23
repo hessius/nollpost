@@ -248,6 +248,7 @@ class AppRuntime:
         mode: str = "inbox",
         refresh: bool = False,
         bypass_cache: bool = False,
+        sync_mail: bool = True,
     ) -> ScanSnapshot:
         if mode not in ("inbox", "catchup"):
             raise HTTPException(status_code=400, detail="Invalid mode")
@@ -275,6 +276,7 @@ class AppRuntime:
                         mode=mode,
                         bypass_cache=bypass_cache,
                         on_progress=_on_progress,
+                        sync_mail=sync_mail,
                     )
                 finally:
                     self.scan_progress = {
@@ -427,6 +429,8 @@ def create_app(
         response = await call_next(request)
         if key_param and hmac.compare_digest(key_param, auth_token) and not hmac.compare_digest(cookie_val, auth_token):
             response.set_cookie("triage_key", auth_token, httponly=True, samesite="strict")
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -684,7 +688,7 @@ def create_app(
 
                 try:
                     runtime.jobs[job_id]["message"] = "Step 3/3 · Refreshing Apple Mail inbox view..."
-                    await runtime.get_snapshot(mode=req.mode, refresh=True, bypass_cache=False)
+                    await runtime.get_snapshot(mode=req.mode, refresh=True, bypass_cache=False, sync_mail=False)
                 except Exception as scan_exc:
                     runtime.jobs[job_id]["scan_warning"] = f"Actions completed, but inbox refresh failed: {scan_exc}"
                 runtime.jobs[job_id]["done"] = runtime.jobs[job_id]["total"]
@@ -745,7 +749,7 @@ def create_app(
         snap = await runtime.get_snapshot(mode="inbox", refresh=False)
         archive_map = {a.name: a.archive_mailbox for a in snap.accounts}
         res = await asyncio.to_thread(runtime.executor.sweep_opened_tray, req.uids, archive_map)
-        await runtime.get_snapshot(mode="inbox", refresh=True)
+        await runtime.get_snapshot(mode="inbox", refresh=True, sync_mail=False)
         return {**res, "stats": runtime.store.get_stats(), "tray": runtime._enrich_tray()}
 
     @app.post("/api/tray/dismiss")

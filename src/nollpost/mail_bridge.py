@@ -553,13 +553,11 @@ end extractMessageLine
             return set()
         return {x.strip() for x in raw.split(",") if x.strip()}
 
-    def synchronize_account(self, account: str, timeout: int = 8) -> bool:
-        """Best-effort bidirectional IMAP sync; returns False cleanly on timeout."""
-        safe_acct = escape_applescript(account)
+    def _run_mail_sync_script(self, body: str, timeout: int) -> bool:
         script = f"""
         tell application "Mail"
             with timeout of {int(timeout)} seconds
-                synchronize with account "{safe_acct}"
+                {body}
             end timeout
         end tell
         """
@@ -568,6 +566,15 @@ end extractMessageLine
             return True
         except Exception:
             return False
+
+    def check_for_new_mail(self, timeout: int = 8) -> bool:
+        """Best-effort fetch trigger across all enabled Mail.app accounts."""
+        return self._run_mail_sync_script("check for new mail", timeout=timeout)
+
+    def synchronize_account(self, account: str, timeout: int = 8) -> bool:
+        """Best-effort bidirectional IMAP sync; returns False cleanly on timeout."""
+        safe_acct = escape_applescript(account)
+        return self._run_mail_sync_script(f'synchronize with account "{safe_acct}"', timeout=timeout)
 
     def mark_read(self, account: str, mailbox: str, internal_ids: list[str]) -> list[str]:
         clean_ids = [str(i).strip() for i in internal_ids if re.fullmatch(r"\d+", str(i).strip())]
