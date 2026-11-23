@@ -51,7 +51,7 @@ FORMULA_TEMPLATE = """class Nollpost < Formula
 
     head_ver = (buildpath/"pyproject.toml").read[/^version\\s*=\\s*"([^"]+)"/, 1]
     app_ver = if build.head?
-      head_ver || "0.2.0"
+      head_ver || "0.3.0"
     else
       version.to_s
     end
