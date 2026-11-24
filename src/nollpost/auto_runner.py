@@ -86,6 +86,18 @@ async def async_acquire_run_lock(data_dir: Path, *, wait_seconds: float = 0.0) -
         fh.close()
 
 
+def _describe_active_rules(config: TriageConfig, store: TriageStore) -> dict[str, Any]:
+    sender_count = len(store.list_sender_memory(filter_kind="auto_archive")) if config.auto_archive_sender_rules else 0
+    return {
+        "sender_auto_archive": sender_count,
+        "auto_decline_consulting": bool(config.auto_decline_consulting),
+        "auto_archive_transactional": bool(config.auto_archive_transactional),
+        "auto_archive_bot_noise": bool(config.auto_archive_bot_noise),
+        "auto_archive_always_archive": bool(config.auto_archive_always_archive),
+        "auto_archive_recent_unsubs": bool(config.auto_archive_recent_unsubs),
+    }
+
+
 def _is_gmail_item(item: ClassifiedItem) -> bool:
     return is_gmail_all_mail_destination(item.archive_mailbox) or "gmail" in item.header.account.lower()
 
@@ -219,10 +231,12 @@ async def _execute_auto_pass(
         )
         pairs, select_warnings = select_auto_actions(snap.items, config, store)
         warnings = [*snap.warnings, *select_warnings]
+        active_rules = _describe_active_rules(config, store)
         if dry_run:
             return {
                 "status": "dry_run",
                 "warnings": warnings,
+                "active_rules": active_rules,
                 "planned": [
                     {
                         "uid": it.uid,
@@ -250,6 +264,7 @@ async def _execute_auto_pass(
                 "executed": 0,
                 "summary": summary,
                 "warnings": warnings,
+                "active_rules": active_rules,
                 "unseen_count": digest["unseen_count"],
                 "last_run_at": digest["last_run_at"],
             }
@@ -281,6 +296,7 @@ async def _execute_auto_pass(
             "executed": len(results),
             "summary": summary,
             "warnings": warnings,
+            "active_rules": active_rules,
             "results": [r.to_dict() for r in results],
             "unseen_count": digest["unseen_count"],
             "last_run_at": digest["last_run_at"],

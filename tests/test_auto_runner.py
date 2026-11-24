@@ -410,6 +410,8 @@ enabled = false
     forced = run_auto_triage(cfg, store, bridge, force=True, mail_running_checker=lambda: True)
     assert forced["status"] == "ok"
     assert forced["summary"]["archived"] == 1
+    assert forced["active_rules"]["sender_auto_archive"] == 1
+    assert forced["active_rules"]["auto_decline_consulting"] is False
     assert any("BrokenAcct offline" in w for w in forced["warnings"])
     digest = store.get_auto_digest()
     assert any("BrokenAcct offline" in w for w in digest["last_warnings"])

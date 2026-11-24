@@ -1246,6 +1246,40 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 msg = "Auto-triage was skipped (\(reason))."
             }
             showAlert(style: .informational, title: "Auto-Triage Skipped", message: msg)
+        } else if status == "ok" {
+            let executed = obj["executed"] as? Int ?? 0
+            let summary = obj["summary"] as? [String: Any] ?? [:]
+            let archived = summary["archived"] as? Int ?? 0
+            let declined = summary["declined"] as? Int ?? 0
+            let failed = summary["failed"] as? Int ?? 0
+
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            if executed > 0 {
+                alert.messageText = "Auto-Triage Complete"
+                alert.informativeText = "Archived \(archived), declined \(declined), failed \(failed).\n\nOpen the Review Board to review the summary or undo any action."
+            } else {
+                let rules = obj["active_rules"] as? [String: Any] ?? [:]
+                let senderCount = rules["sender_auto_archive"] as? Int ?? 0
+                let hasAnyToggle = (rules["auto_decline_consulting"] as? Bool ?? false)
+                    || (rules["auto_archive_transactional"] as? Bool ?? false)
+                    || (rules["auto_archive_bot_noise"] as? Bool ?? false)
+                    || (rules["auto_archive_always_archive"] as? Bool ?? false)
+                    || (rules["auto_archive_recent_unsubs"] as? Bool ?? false)
+                if senderCount == 0 && !hasAnyToggle {
+                    alert.messageText = "Auto-Triage: No Active Rules"
+                    alert.informativeText = "0 emails matched because all category autopilot toggles (such as Auto-decline Consulting Mismatches) are currently off and no senders are marked Auto (Archive & Summarize) yet.\n\nOpen the Review Board to enable them in Settings or on any email row."
+                } else {
+                    alert.messageText = "Auto-Triage Complete"
+                    alert.informativeText = "0 unread Inbox emails matched your active auto-triage rules."
+                }
+            }
+            alert.addButton(withTitle: "Open Review Board")
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                openReviewBoard(nil)
+            }
         }
     }
 
