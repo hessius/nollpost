@@ -577,7 +577,7 @@
     return groups;
   }
 
-  function renderItemRow(item) {
+  function renderItemRow(item, extraRowClass = "") {
     const h = item.header;
     const checked = state.selectedUids.has(item.uid);
     const curAction = state.actionsByUid.get(item.uid) || item.default_action;
@@ -644,8 +644,14 @@
         </div>`;
     }
 
+    const rowClasses = [
+      checked ? "selected-row" : "",
+      h.is_read ? "read-row" : "unread-row",
+      extraRowClass,
+    ].filter(Boolean).join(" ");
+
     return `
-    <tr class="${checked ? "selected-row" : ""} ${h.is_read ? "read-row" : "unread-row"}">
+    <tr class="${rowClasses}">
       <td><input type="checkbox" class="row-cb" data-uid="${escapeHtml(item.uid)}" ${checked ? "checked" : ""} /></td>
       <td><span class="acct ${acctCls}">${escapeHtml(h.account)}</span></td>
       <td>
@@ -739,7 +745,23 @@
             </td>
           </tr>`;
         }
-        return headerRow + grp.items.map(renderItemRow).join("");
+        const memberRows = grp.items
+          .map((item, itemIdx) => {
+            if (!grp.showHeader) return renderItemRow(item);
+            const cls = itemIdx === grp.items.length - 1
+              ? "group-member-row group-end-row"
+              : "group-member-row";
+            return renderItemRow(item, cls);
+          })
+          .join("");
+        const prevHasHeader = grpIdx > 0 && Boolean(groups[grpIdx - 1].showHeader);
+        const topGapRow = grp.showHeader && !prevHasHeader
+          ? `<tr class="group-gap-row" aria-hidden="true"><td colspan="5"></td></tr>`
+          : "";
+        const bottomGapRow = grp.showHeader
+          ? `<tr class="group-gap-row" aria-hidden="true"><td colspan="5"></td></tr>`
+          : "";
+        return topGapRow + headerRow + memberRows + bottomGapRow;
       })
       .join("");
 
