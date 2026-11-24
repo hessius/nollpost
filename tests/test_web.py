@@ -787,6 +787,9 @@ def test_sort_and_group_by_controls_in_chromium(tmp_path: Path, monkeypatch):
                 sender_btn = page.locator('#group-by-toggle button[data-group="sender"]')
                 assert "active" in (await sender_btn.get_attribute("class") or "")
                 assert await page.locator("tr.group-header-row").count() == 1
+                assert await page.locator("tr.group-member-row").count() == 2
+                assert await page.locator("tr.group-end-row").count() == 1
+                assert await page.locator("tr.group-gap-row").count() == 2
                 assert "2 messages" in (await page.locator("tr.group-header-row").first.inner_text())
 
                 subjects = await page.locator("tbody tr:not(.group-header-row) td:nth-child(4) strong").all_inner_texts()
@@ -797,9 +800,10 @@ def test_sort_and_group_by_controls_in_chromium(tmp_path: Path, monkeypatch):
                 assert await page.locator("input.row-cb:checked").count() == 2
                 assert "Execute Selected (1)" in (await page.locator("#btn-exec-selected").inner_text())
 
-                # Switch Group to Category: 2 category groups (Newsletters & Bots, Updates & Comments)
+                # Switch Group to Category: 2 consecutive category groups share 1 gap between them (top + middle + bottom = 3)
                 await page.locator('#group-by-toggle button[data-group="category"]').click()
                 assert await page.locator("tr.group-header-row").count() == 2
+                assert await page.locator("tr.group-gap-row").count() == 3
 
                 # Switch Group to None and sort Subject (A-Z)
                 await page.locator('#group-by-toggle button[data-group="none"]').click()

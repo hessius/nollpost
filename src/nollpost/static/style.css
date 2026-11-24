@@ -315,6 +315,28 @@ h1 { font-size: 16px; font-weight: 700; margin: 0; }
   font-size: 11.5px;
   border-bottom: 1px solid var(--border);
 }
+.tbl tr.group-header-row td:first-child {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+.tbl tr.group-member-row:not(.selected-row) td {
+  background: color-mix(in srgb, var(--bg-tertiary) 30%, var(--bg-secondary));
+}
+.tbl tr.group-member-row td:first-child {
+  padding-left: 20px;
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.tbl tr.group-member-row td:nth-child(2) {
+  padding-left: 16px;
+}
+.tbl tr.group-end-row td {
+  border-bottom: 1px solid color-mix(in srgb, var(--text-secondary) 28%, var(--border));
+}
+.tbl tr.group-gap-row td {
+  height: 6px;
+  padding: 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+}
 .group-header-inner {
   display: flex;
   flex-wrap: wrap;
