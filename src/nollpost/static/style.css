@@ -337,6 +337,9 @@ h1 { font-size: 16px; font-weight: 700; margin: 0; }
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border);
 }
+.tbl tr.group-gap-row:last-child td {
+  border-bottom: none;
+}
 .group-header-inner {
   display: flex;
   flex-wrap: wrap;

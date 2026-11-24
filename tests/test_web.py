@@ -798,16 +798,22 @@ def test_sort_and_group_by_controls_in_chromium(tmp_path: Path, monkeypatch):
                 # Group checkbox selects all rows in Shop group (2 items; 1 has non-noop default action)
                 await page.locator("input.group-cb").first.check()
                 assert await page.locator("input.row-cb:checked").count() == 2
+                assert await page.locator("tr.group-member-row.selected-row").count() == 2
                 assert "Execute Selected (1)" in (await page.locator("#btn-exec-selected").inner_text())
 
                 # Switch Group to Category: 2 consecutive category groups share 1 gap between them (top + middle + bottom = 3)
                 await page.locator('#group-by-toggle button[data-group="category"]').click()
                 assert await page.locator("tr.group-header-row").count() == 2
+                assert await page.locator("tr.group-member-row").count() == 3
+                assert await page.locator("tr.group-end-row").count() == 2
                 assert await page.locator("tr.group-gap-row").count() == 3
 
                 # Switch Group to None and sort Subject (A-Z)
                 await page.locator('#group-by-toggle button[data-group="none"]').click()
                 assert await page.locator("tr.group-header-row").count() == 0
+                assert await page.locator("tr.group-member-row").count() == 0
+                assert await page.locator("tr.group-end-row").count() == 0
+                assert await page.locator("tr.group-gap-row").count() == 0
                 await page.locator("#sort-by-select").select_option("subject_asc")
                 subjects_az = await page.locator("tbody tr td:nth-child(4) strong").all_inner_texts()
                 assert subjects_az == ["Alpha Deal", "Beta Release", "Zebra Deal"]
