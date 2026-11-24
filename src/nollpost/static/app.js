@@ -45,11 +45,14 @@
     rulesItems: [],
     rulesSeq: 0,
     auditStatus: "all",
+    auditSource: "all",
     auditRunId: "",
     auditSearch: "",
     auditItems: [],
     auditRuns: [],
     auditSeq: 0,
+    autoDigest: null,
+    autoDigestExpanded: true,
     updateInfo: null,
   };
 
@@ -658,6 +661,7 @@
           <select class="pref-select" data-pref-email="${escapeHtml(h.sender_email)}" data-pref-dom="${escapeHtml(h.sender_domain)}" data-pref-name="${escapeHtml(h.sender)}">
             <option value="">${escapeHtml(t("pref.remember"))}</option>
             <option value="always_keep">${escapeHtml(t("pref.always_keep"))}</option>
+            <option value="auto_archive">${escapeHtml(t("pref.auto_archive"))}</option>
             <option value="archive">${escapeHtml(t("pref.always_archive"))}</option>
             <option value="mark_read">${escapeHtml(t("pref.always_mark_read"))}</option>
             <option value="clear">${escapeHtml(t("pref.clear"))}</option>
@@ -754,9 +758,78 @@
       </table>`;
   }
 
+  function renderAutoDigest() {
+    const el = qs("auto-digest-banner");
+    if (!el) return;
+    const digest = state.autoDigest;
+    const items = digest?.items || [];
+    const warnings = digest?.last_warnings || [];
+    if (!items.length && !warnings.length) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    const summ = digest.summary || { archived: 0, declined: 0, failed: 0 };
+    const pills = [];
+    if (summ.archived > 0) pills.push(`<span class="pill green">${escapeHtml(t("digest.archived_pill", { count: summ.archived }))}</span>`);
+    if (summ.declined > 0) pills.push(`<span class="pill accent">${escapeHtml(t("digest.declined_pill", { count: summ.declined }))}</span>`);
+    if (summ.failed > 0) pills.push(`<span class="pill warn">${escapeHtml(t("digest.failed_pill", { count: summ.failed }))}</span>`);
+
+    const warnHtml = warnings.map((w) => `<div class="auto-digest-warn">${escapeHtml(w)}</div>`).join("");
+    const toggleLbl = state.autoDigestExpanded ? t("digest.toggle_hide") : t("digest.toggle_show");
+    const rowsHtml = state.autoDigestExpanded
+      ? `<div class="auto-digest-list">${items
+          .map((row) => {
+            const st = String(row.status || "");
+            const stCls = st === "ok" ? "green" : st === "failed" ? "danger" : "warn";
+            const undoBtn = row.can_undo_archive
+              ? `<button class="btn tiny secondary" data-digest-undo="${row.id}">${escapeHtml(t("digest.undo_btn"))}</button>`
+              : "";
+            return `<div class="auto-digest-row">
+              <div class="auto-digest-row-main">
+                <div><strong>${escapeHtml(row.subject || t("row.no_subject"))}</strong> <span class="pill ${stCls}">${escapeHtml(actionLabel(row.action))}</span></div>
+                <div class="sub-meta">
+                  <span>${escapeHtml(row.sender)}</span>
+                  <span>· ${escapeHtml((row.created_at || "").slice(0, 16).replace("T", " "))}</span>
+                  ${row.detail ? `<span>· ${escapeHtml(row.detail)}</span>` : ""}
+                </div>
+              </div>
+              <div>${undoBtn}</div>
+            </div>`;
+          })
+          .join("")}</div>`
+      : "";
+
+    el.innerHTML = `
+      <div class="auto-digest-head">
+        <div class="auto-digest-summary">
+          <strong>${escapeHtml(t("digest.title", { count: items.length }))}</strong>
+          ${pills.join("")}
+        </div>
+        <div class="auto-digest-actions">
+          ${items.length ? `<button class="btn small secondary" id="btn-auto-digest-toggle">${escapeHtml(toggleLbl)}</button>` : ""}
+          <button class="btn small primary" id="btn-auto-digest-ack" data-max-id="${Number(digest?.max_log_id || 0)}">${escapeHtml(t("digest.ack_btn"))}</button>
+        </div>
+      </div>
+      ${warnHtml}
+      ${rowsHtml}
+    `;
+    el.classList.remove("hidden");
+  }
+
+  async function loadAutoDigest() {
+    try {
+      state.autoDigest = await api("/api/auto/digest");
+    } catch (_ignored) {
+      state.autoDigest = null;
+    }
+    renderAutoDigest();
+  }
+
   function render() {
     renderTabs();
     renderHeader();
+    renderAutoDigest();
     renderTable();
   }
 
@@ -795,6 +868,9 @@
       }
       hydrateActionsFromData(data);
       render();
+      if (refresh) {
+        loadAutoDigest();
+      }
     } catch (err) {
       if (seq === state.loadSeq) {
         qs("queue-container").innerHTML = renderRecoveryCard(err.message);
@@ -1100,6 +1176,7 @@
     const b = cfg.browser || {};
     const c = cfg.consulting || {};
     const p = cfg.profile || {};
+    const au = cfg.automation || {};
 
     const stratOpts = (a.valid_gmail_strategies || ["background", "ui_menu", "two_hop", "tag_staging"])
       .map((s) => {
@@ -1234,6 +1311,56 @@
         </div>
       </div>
 
+      <div class="preview-box" style="max-height:none;">
+        <strong>${escapeHtml(t("settings.section_automation"))}</strong>
+        <div class="settings-grid" style="margin-top:8px;">
+          <div class="settings-field">
+            <label class="toggle-check">
+              <input type="checkbox" id="cfg-auto-enabled" ${au.enabled !== false ? "checked" : ""} />
+              <span>${escapeHtml(t("settings.auto_enabled"))}</span>
+            </label>
+          </div>
+          <div class="settings-field">
+            <label for="cfg-auto-interval">${escapeHtml(t("settings.auto_interval"))}</label>
+            <input id="cfg-auto-interval" type="number" min="1" max="1440" value="${Number(au.interval_minutes ?? 60)}" />
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-sender-rules" ${au.auto_archive_sender_rules !== false ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_sender_rules"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-consult" ${au.auto_decline_consulting ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_consulting"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-tx" ${au.auto_archive_transactional ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_transactional"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-bots" ${au.auto_archive_bot_noise ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_bot_noise"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-always-archive" ${au.auto_archive_always_archive ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_always_archive"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-recent-unsubs" ${au.auto_archive_recent_unsubs ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_recent_unsubs"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-skip-security" ${au.skip_security_alerts !== false ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_skip_security"))}</span>
+          </label>
+          <label class="toggle-check">
+            <input type="checkbox" id="cfg-auto-skip-pdfs" ${au.skip_pdf_invoices !== false ? "checked" : ""} />
+            <span>${escapeHtml(t("settings.auto_skip_pdfs"))}</span>
+          </label>
+        </div>
+      </div>
+
       <div class="settings-footer">
         <span id="settings-status" class="modal-status">${escapeHtml(t("settings.status_hint"))}</span>
         <button class="btn small primary" id="btn-save-settings">${escapeHtml(t("settings.save_btn"))}</button>
@@ -1245,6 +1372,7 @@
   function formatSenderRuleStatus(row) {
     const tags = [];
     if (row.preferred_action === "always_keep") tags.push(`<span class="pill green">${escapeHtml(t("rules.always_keep"))}</span>`);
+    else if (row.preferred_action === "auto_archive") tags.push(`<span class="pill green">${escapeHtml(t("rules.auto_archive"))}</span>`);
     else if (row.preferred_action === "archive") tags.push(`<span class="pill accent">${escapeHtml(t("rules.always_archive"))}</span>`);
     else if (row.preferred_action === "mark_read") tags.push(`<span class="pill muted">${escapeHtml(t("rules.always_mark_read"))}</span>`);
     if (row.unsubscribed_at || row.unsub_count > 0) {
@@ -1289,6 +1417,7 @@
                 <select class="pref-select rule-edit-select" data-rule-key="${escapeHtml(r.sender_key)}">
                   <option value="">${escapeHtml(t("rules.change_placeholder"))}</option>
                   <option value="always_keep">${escapeHtml(t("rules.always_keep"))}</option>
+                  <option value="auto_archive">${escapeHtml(t("rules.auto_archive"))}</option>
                   <option value="archive">${escapeHtml(t("rules.always_archive"))}</option>
                   <option value="mark_read">${escapeHtml(t("rules.always_mark_read"))}</option>
                   <option value="clear">${escapeHtml(t("pref.clear"))}</option>
@@ -1321,6 +1450,7 @@
     const kinds = [
       { id: "all", label: t("rules.all") },
       { id: "always_keep", label: t("rules.always_keep") },
+      { id: "auto_archive", label: t("rules.auto_archive") },
       { id: "archive", label: t("rules.always_archive") },
       { id: "mark_read", label: t("rules.always_mark_read") },
       { id: "unsubscribed", label: t("rules.unsubscribed") },
@@ -1346,6 +1476,7 @@
           <select id="rules-bulk-action" class="pref-select" style="font-size:12px;padding:4px 8px;">
             <option value="">${escapeHtml(t("rules.bulk_placeholder", { count: state.rulesSelectedKeys.size }))}</option>
             <option value="always_keep">${escapeHtml(t("rules.bulk_keep"))}</option>
+            <option value="auto_archive">${escapeHtml(t("rules.bulk_auto_archive"))}</option>
             <option value="archive">${escapeHtml(t("rules.bulk_archive"))}</option>
             <option value="mark_read">${escapeHtml(t("rules.bulk_mark_read"))}</option>
             <option value="clear">${escapeHtml(t("rules.bulk_clear"))}</option>
@@ -1398,6 +1529,7 @@
     const seq = ++state.auditSeq;
     const params = new URLSearchParams({
       status: state.auditStatus || "all",
+      source: state.auditSource || "all",
       run_id: state.auditRunId || "",
       search: state.auditSearch || "",
       limit: "200",
@@ -1486,11 +1618,23 @@
         return `<option value="${escapeHtml(r.run_id)}" ${sel}>${escapeHtml(lbl)}</option>`;
       }),
     ].join("");
+    const sources = [
+      { id: "all", label: t("audit.source_all") },
+      { id: "auto", label: t("audit.source_auto") },
+      { id: "manual", label: t("audit.source_manual") },
+    ];
+    const sourceTabs = sources
+      .map(
+        (s) =>
+          `<button class="tab ${state.auditSource === s.id ? "active" : ""}" data-audit-source="${escapeHtml(s.id)}">${escapeHtml(s.label)}</button>`
+      )
+      .join("");
     const items = state.auditItems || [];
     qs("snap-title").textContent = t("audit.title", { count: items.length });
     qs("snap-body").innerHTML = `
       <div class="rules-toolbar">
         <div class="tabs">${statusTabs}</div>
+        <div class="tabs">${sourceTabs}</div>
         <input type="search" id="audit-search-input" class="search-box" value="${escapeHtml(state.auditSearch)}" placeholder="${escapeHtml(t("audit.search_placeholder"))}" />
       </div>
       <div class="rules-toolbar">
@@ -1570,6 +1714,21 @@
               bill_keywords: parseCsvOrLines(qs("cfg-bill-keywords")?.value || ""),
               transactional_domains: parseCsvOrLines(qs("cfg-transactional-domains")?.value || ""),
             },
+            automation: {
+              enabled: Boolean(qs("cfg-auto-enabled")?.checked),
+              interval_minutes: (() => {
+                const raw = qs("cfg-auto-interval")?.value?.trim() ?? "";
+                return raw === "" ? 60 : Number(raw);
+              })(),
+              auto_archive_sender_rules: Boolean(qs("cfg-auto-sender-rules")?.checked),
+              auto_decline_consulting: Boolean(qs("cfg-auto-consult")?.checked),
+              auto_archive_transactional: Boolean(qs("cfg-auto-tx")?.checked),
+              auto_archive_bot_noise: Boolean(qs("cfg-auto-bots")?.checked),
+              auto_archive_always_archive: Boolean(qs("cfg-auto-always-archive")?.checked),
+              auto_archive_recent_unsubs: Boolean(qs("cfg-auto-recent-unsubs")?.checked),
+              skip_security_alerts: Boolean(qs("cfg-auto-skip-security")?.checked),
+              skip_pdf_invoices: Boolean(qs("cfg-auto-skip-pdfs")?.checked),
+            },
           };
           await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
           await loadI18n();
@@ -1590,6 +1749,37 @@
       if (target.dataset.rulesKind) {
         state.rulesFilter = target.dataset.rulesKind;
         await refreshSenderRulesData();
+        return;
+      }
+      if (target.id === "btn-auto-digest-toggle") {
+        state.autoDigestExpanded = !state.autoDigestExpanded;
+        renderAutoDigest();
+        return;
+      }
+      if (target.id === "btn-auto-digest-ack") {
+        const rawMax = Number(target.dataset.maxId || 0);
+        const body = rawMax > 0 ? { max_log_id: rawMax } : {};
+        await api("/api/auto/ack", { method: "POST", body: JSON.stringify(body) });
+        await loadAutoDigest();
+        return;
+      }
+      if (target.dataset.digestUndo) {
+        const entryId = Number(target.dataset.digestUndo);
+        const resp = await api(`/api/audit-log/${entryId}/undo`, { method: "POST" });
+        const resEl = qs("results-banner");
+        if (resEl) {
+          resEl.className = "results-banner";
+          resEl.dataset.kind = "results";
+          resEl.textContent = t("digest.restored_ok", { dest: resp.restored_to || "INBOX" });
+          resEl.classList.remove("hidden");
+        }
+        await loadAutoDigest();
+        await loadState(false);
+        return;
+      }
+      if (target.dataset.auditSource) {
+        state.auditSource = target.dataset.auditSource;
+        await refreshAuditLogData();
         return;
       }
       if (target.dataset.auditStatus) {
@@ -2130,7 +2320,7 @@
       // Fall back to static English DOM strings if locale fetch fails
     }
     checkForUpdates(false);
-    await loadState(forceInitialRefresh);
+    await Promise.all([loadAutoDigest(), loadState(forceInitialRefresh)]);
   })().catch((err) => {
     showError(err.message);
   });

@@ -103,6 +103,18 @@ bill_keywords = [
     "receipt",
     "billing",
 ]
+
+[automation]
+enabled = true
+interval_minutes = 60
+auto_archive_sender_rules = true
+auto_decline_consulting = false
+auto_archive_transactional = false
+auto_archive_bot_noise = false
+auto_archive_always_archive = false
+auto_archive_recent_unsubs = false
+skip_security_alerts = true
+skip_pdf_invoices = true
 """
 
 
@@ -139,6 +151,16 @@ class TriageConfig:
     bot_senders: list[str] = field(default_factory=list)
     transactional_domains: list[str] = field(default_factory=list)
     bill_keywords: list[str] = field(default_factory=list)
+    auto_enabled: bool = True
+    auto_interval_minutes: int = 60
+    auto_archive_sender_rules: bool = True
+    auto_decline_consulting: bool = False
+    auto_archive_transactional: bool = False
+    auto_archive_bot_noise: bool = False
+    auto_archive_always_archive: bool = False
+    auto_archive_recent_unsubs: bool = False
+    auto_skip_security_alerts: bool = True
+    auto_skip_pdf_invoices: bool = True
 
 
 def _resolve_path_with_legacy(
@@ -213,7 +235,7 @@ def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]
 
 
 def _validate_toml_sections(merged: dict[str, Any]) -> None:
-    for sec in ("user", "accounts", "rules", "browser", "consulting", "profile"):
+    for sec in ("user", "accounts", "rules", "browser", "consulting", "profile", "automation"):
         if not isinstance(merged.get(sec), dict):
             raise ValueError(f"[{sec}] in config.toml must be a table")
     if not isinstance(merged["accounts"].get("archive_map", {}), dict):
@@ -262,6 +284,10 @@ def load_config(
     browser_sec = merged["browser"]
     consult_sec = merged["consulting"]
     prof_sec = merged["profile"]
+    auto_sec = merged["automation"]
+    auto_interval_minutes = _validate_int_range(
+        "automation.interval_minutes", auto_sec.get("interval_minutes", 60), 1, 1440
+    )
 
     browser_locale = str(browser_sec.get("locale", "")).strip() or _detect_system_locale()
     accept_language = str(browser_sec.get("accept_language", "")).strip() or _default_accept_language(browser_locale)
@@ -336,6 +362,16 @@ def load_config(
         bot_senders=[s.lower() for s in prof_sec["bot_senders"]],
         transactional_domains=[s.lower() for s in prof_sec["transactional_domains"]],
         bill_keywords=[s.lower() for s in prof_sec["bill_keywords"]],
+        auto_enabled=bool(auto_sec.get("enabled", True)),
+        auto_interval_minutes=auto_interval_minutes,
+        auto_archive_sender_rules=bool(auto_sec.get("auto_archive_sender_rules", True)),
+        auto_decline_consulting=bool(auto_sec.get("auto_decline_consulting", False)),
+        auto_archive_transactional=bool(auto_sec.get("auto_archive_transactional", False)),
+        auto_archive_bot_noise=bool(auto_sec.get("auto_archive_bot_noise", False)),
+        auto_archive_always_archive=bool(auto_sec.get("auto_archive_always_archive", False)),
+        auto_archive_recent_unsubs=bool(auto_sec.get("auto_archive_recent_unsubs", False)),
+        auto_skip_security_alerts=bool(auto_sec.get("skip_security_alerts", True)),
+        auto_skip_pdf_invoices=bool(auto_sec.get("skip_pdf_invoices", True)),
     )
 
 
@@ -378,6 +414,7 @@ def render_config_toml(data: dict[str, Any]) -> str:
     browser = data["browser"]
     consulting = data["consulting"]
     profile = data["profile"]
+    automation = data.get("automation", {})
 
     lines = [
         "# nollpost configuration",
@@ -422,6 +459,18 @@ def render_config_toml(data: dict[str, Any]) -> str:
             f"bot_senders = {toml_str_list([str(x) for x in profile.get('bot_senders', [])])}",
             f"transactional_domains = {toml_str_list([str(x) for x in profile.get('transactional_domains', [])])}",
             f"bill_keywords = {toml_str_list([str(x) for x in profile.get('bill_keywords', [])])}",
+            "",
+            "[automation]",
+            f"enabled = {'true' if automation.get('enabled', True) else 'false'}",
+            f"interval_minutes = {int(automation.get('interval_minutes', 60))}",
+            f"auto_archive_sender_rules = {'true' if automation.get('auto_archive_sender_rules', True) else 'false'}",
+            f"auto_decline_consulting = {'true' if automation.get('auto_decline_consulting', False) else 'false'}",
+            f"auto_archive_transactional = {'true' if automation.get('auto_archive_transactional', False) else 'false'}",
+            f"auto_archive_bot_noise = {'true' if automation.get('auto_archive_bot_noise', False) else 'false'}",
+            f"auto_archive_always_archive = {'true' if automation.get('auto_archive_always_archive', False) else 'false'}",
+            f"auto_archive_recent_unsubs = {'true' if automation.get('auto_archive_recent_unsubs', False) else 'false'}",
+            f"skip_security_alerts = {'true' if automation.get('skip_security_alerts', True) else 'false'}",
+            f"skip_pdf_invoices = {'true' if automation.get('skip_pdf_invoices', True) else 'false'}",
             "",
         ]
     )
@@ -567,6 +616,26 @@ def update_config_file(
         for key in ("wanted_domains", "bot_senders", "transactional_domains", "bill_keywords"):
             if key in p:
                 merged["profile"][key] = _require_str_list(f"profile.{key}", p[key])
+
+    if "automation" in updates and isinstance(updates["automation"], dict):
+        au = updates["automation"]
+        if "interval_minutes" in au:
+            merged["automation"]["interval_minutes"] = _validate_int_range(
+                "automation.interval_minutes", au["interval_minutes"], 1, 1440
+            )
+        for key in (
+            "enabled",
+            "auto_archive_sender_rules",
+            "auto_decline_consulting",
+            "auto_archive_transactional",
+            "auto_archive_bot_noise",
+            "auto_archive_always_archive",
+            "auto_archive_recent_unsubs",
+            "skip_security_alerts",
+            "skip_pdf_invoices",
+        ):
+            if key in au:
+                merged["automation"][key] = bool(au[key])
 
     rendered = render_config_toml(merged)
     config_path.parent.mkdir(parents=True, exist_ok=True)

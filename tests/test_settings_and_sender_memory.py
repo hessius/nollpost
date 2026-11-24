@@ -272,3 +272,72 @@ def test_legacy_consulting_preserved_and_chunked_sender_delete(tmp_path: Path, m
         store.record_sender_preference(k, "", "archive", True)
     deleted = store.delete_sender_memory(keys)
     assert deleted == 5
+
+
+def test_automation_config_defaults_and_roundtrip(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("[user]\ndisplay_name = \"Ada\"\n", encoding="utf-8")
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+
+    cfg = load_config(ensure_files=False, config_path=cfg_path)
+    assert cfg.auto_enabled is True
+    assert cfg.auto_interval_minutes == 60
+    assert cfg.auto_archive_sender_rules is True
+    assert cfg.auto_decline_consulting is False
+    assert cfg.auto_archive_transactional is False
+    assert cfg.auto_archive_bot_noise is False
+    assert cfg.auto_archive_always_archive is False
+    assert cfg.auto_archive_recent_unsubs is False
+    assert cfg.auto_skip_security_alerts is True
+    assert cfg.auto_skip_pdf_invoices is True
+
+    updated = update_config_file(
+        cfg_path,
+        {
+            "automation": {
+                "enabled": False,
+                "interval_minutes": 30,
+                "auto_decline_consulting": True,
+                "auto_archive_transactional": True,
+                "auto_archive_bot_noise": True,
+                "auto_archive_always_archive": True,
+                "auto_archive_recent_unsubs": True,
+                "skip_security_alerts": True,
+                "skip_pdf_invoices": False,
+            }
+        },
+    )
+    assert updated.auto_enabled is False
+    assert updated.auto_interval_minutes == 30
+    assert updated.auto_decline_consulting is True
+    assert updated.auto_archive_transactional is True
+    assert updated.auto_archive_bot_noise is True
+    assert updated.auto_archive_always_archive is True
+    assert updated.auto_archive_recent_unsubs is True
+    assert updated.auto_skip_pdf_invoices is False
+
+    reloaded = load_config(ensure_files=False, config_path=cfg_path)
+    assert reloaded.auto_interval_minutes == 30
+    assert reloaded.auto_decline_consulting is True
+    assert reloaded.auto_skip_pdf_invoices is False
+
+
+def test_automation_config_rejects_invalid_interval(tmp_path: Path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("NOLLPOST_CONFIG", str(cfg_path))
+    monkeypatch.setenv("NOLLPOST_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("NOLLPOST_CACHE_DIR", str(tmp_path / "cache"))
+
+    with pytest.raises(ValueError, match="interval_minutes"):
+        update_config_file(cfg_path, {"automation": {"interval_minutes": 0}})
+    with pytest.raises(ValueError, match="interval_minutes"):
+        update_config_file(cfg_path, {"automation": {"interval_minutes": True}})
+    with pytest.raises(ValueError, match="interval_minutes"):
+        update_config_file(cfg_path, {"automation": {"interval_minutes": 2000}})
+    bad_toml = tmp_path / "bad_auto.toml"
+    bad_toml.write_text("[automation]\ninterval_minutes = 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="interval_minutes"):
+        load_config(ensure_files=False, config_path=bad_toml)

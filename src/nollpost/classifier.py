@@ -139,6 +139,53 @@ def classify_email(
             reason="Explicitly marked always keep",
         )
 
+    # Pre-check security alerts & Gov/Kivra notices before consulting outreach so 2FA/login alerts are never auto-declined
+    is_security = bool(
+        SECURITY_KEYWORDS_RE.search(combined)
+        or _domain_matches(header.sender_domain, BASE_SECURITY_DOMAINS)
+        or any(p.security_text_re and p.security_text_re.search(combined) for p in packs)
+    )
+    matched_gov_pack = next(
+        (
+            p
+            for p in packs
+            if p.gov_domain_token
+            and (p.gov_domain_token in combined or p.gov_domain_token in sender_domain_low)
+        ),
+        None,
+    )
+    if is_security or matched_gov_pack is not None:
+        allowed = _base_allowed_actions(header, extracted, "attention", catchup_mode=catchup_mode)
+        if is_security:
+            subcat = "Security Alert"
+            badges.append("Security")
+        else:
+            assert matched_gov_pack is not None
+            subcat = matched_gov_pack.gov_subcategory
+            badges.append(matched_gov_pack.gov_badge)
+        if catchup_mode or header.is_read:
+            default_act = "no_action"
+            if header.is_read and not catchup_mode:
+                badges.append("Already read")
+        elif extracted.pdf_attachments:
+            default_act = "read_show_invoice"
+        elif extracted.pertinent_url:
+            default_act = "read_open_link"
+        else:
+            default_act = "no_action"
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="attention",
+            subcategory=subcat,
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            reason=f"Matched {'security alert' if is_security else 'government/digital mail'}",
+        )
+
     # 2. Consulting outreach (opt-in via [consulting] enabled = true or configured networks)
     is_consulting = config.consulting_enabled and (
         _domain_matches(header.sender_domain, config.consulting_networks)
@@ -204,11 +251,6 @@ def classify_email(
         explicit_bill_senders.extend(pack.explicit_bill_senders)
 
     bill_kw = _contains_any_keyword(combined, effective_bill_keywords)
-    is_security = bool(
-        SECURITY_KEYWORDS_RE.search(combined)
-        or _domain_matches(header.sender_domain, BASE_SECURITY_DOMAINS)
-        or any(p.security_text_re and p.security_text_re.search(combined) for p in packs)
-    )
     is_explicit_bill_sender = any(
         k in sender_domain_low or k in sender_email_low for k in explicit_bill_senders
     )
@@ -222,17 +264,38 @@ def classify_email(
     )
     is_retail_promo_noise = has_retail_promo and not has_critical_bill and not extracted.pdf_attachments
 
+    # 3a. Critical safety guardrails in Attention (PDF invoices)
+    is_protected_pdf = bool(extracted.pdf_attachments) and config.auto_skip_pdf_invoices
+    is_auto_archive_pref = bool(sender_mem and sender_mem.preferred_action == "auto_archive")
+    is_always_archive_override = bool(
+        config.auto_archive_always_archive and sender_mem and sender_mem.preferred_action == "archive"
+    )
+
+    if (is_auto_archive_pref or is_always_archive_override) and not is_protected_pdf:
+        allowed = _base_allowed_actions(header, extracted, "newsletters", catchup_mode=catchup_mode)
+        default_act = "no_action" if (header.is_read or catchup_mode) else "archive"
+        subcat = "Auto-Archive" if is_auto_archive_pref else "Remembered Archive"
+        badges.append("Auto-Archive" if is_auto_archive_pref else "Learned: archive")
+        return ClassifiedItem(
+            uid=uid,
+            header=header,
+            extracted=extracted,
+            category="newsletters",
+            subcategory=subcat,
+            default_action=default_act,
+            allowed_actions=allowed,
+            badges=badges,
+            archive_mailbox=archive_mailbox,
+            learned_preference=sender_mem.preferred_action,
+            reason=(
+                "Explicitly marked Auto (Archive & Summarize)"
+                if is_auto_archive_pref
+                else "Remembered Always Archive sender (autopilot enabled)"
+            ),
+        )
+
     if is_explicit_bill_sender or extracted.pdf_attachments or is_security or (bill_kw and not is_retail_promo_noise):
         allowed = _base_allowed_actions(header, extracted, "attention", catchup_mode=catchup_mode)
-        matched_gov_pack = next(
-            (
-                p
-                for p in packs
-                if p.gov_domain_token
-                and (p.gov_domain_token in combined or p.gov_domain_token in sender_domain_low)
-            ),
-            None,
-        )
         if is_security:
             subcat = "Security Alert"
             badges.append("Security")

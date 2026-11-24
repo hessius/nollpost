@@ -826,3 +826,270 @@ def test_sort_and_group_by_controls_in_chromium(tmp_path: Path, monkeypatch):
             store.close()
 
     asyncio.run(_run())
+
+
+def test_auto_preferences_and_settings_endpoints(tmp_path: Path, monkeypatch):
+    _setup_test_env(tmp_path, monkeypatch)
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, FakeBridge(), token="auto-pref-tok")
+    headers = {"X-Triage-Key": token}
+
+    with TestClient(app) as client:
+        pref = client.post(
+            "/api/preferences",
+            headers=headers,
+            json={
+                "sender_email": "alerts@bank.example",
+                "sender_domain": "bank.example",
+                "display_name": "MyBank",
+                "preference": "auto_archive",
+            },
+        )
+        assert pref.status_code == 200
+        rules = client.get("/api/sender-memory?kind=auto_archive", headers=headers).json()
+        assert [r["sender_key"] for r in rules["items"]] == ["alerts@bank.example"]
+
+        bulk = client.post(
+            "/api/sender-memory/bulk",
+            headers=headers,
+            json={"sender_keys": ["other@bank.example"], "action": "auto_archive"},
+        )
+        assert bulk.status_code == 200
+        assert len(client.get("/api/sender-memory?kind=auto_archive", headers=headers).json()["items"]) == 2
+
+        settings_before = client.get("/api/settings", headers=headers).json()
+        assert settings_before["automation"]["interval_minutes"] == 60
+        assert settings_before["automation"]["auto_decline_consulting"] is False
+
+        put_res = client.put(
+            "/api/settings",
+            headers=headers,
+            json={
+                "automation": {
+                    "interval_minutes": 30,
+                    "auto_decline_consulting": True,
+                    "auto_archive_transactional": True,
+                }
+            },
+        )
+        assert put_res.status_code == 200
+        assert put_res.json()["settings"]["automation"]["interval_minutes"] == 30
+        assert put_res.json()["settings"]["automation"]["auto_decline_consulting"] is True
+
+
+def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class AutoWebBridge(FakeBridge):
+        def __init__(self):
+            super().__init__()
+            self.archived_ids: set[str] = set()
+
+        def check_for_new_mail(self) -> bool:
+            return False
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "iCloud" and "10" not in self.archived_ids:
+                return [
+                    MailHeader("iCloud", "INBOX", "10", "m10", "Card notice", "MyBank <alerts@bank.example>", "alerts@bank.example", "bank.example", "2026-11-23T09:00:00", False, False, 0),
+                ]
+            return []
+
+        def get_raw_source(self, account: str, mailbox: str, internal_id: str) -> bytes:
+            msg = EmailMessage()
+            msg["Subject"] = "Card notice"
+            msg["From"] = "MyBank <alerts@bank.example>"
+            msg.set_content("Transaction notice")
+            return msg.as_bytes()
+
+        def mark_read_and_archive(self, account: str, mailbox: str, archive_mailbox: str, internal_ids: list[str], *, mark_read: bool = True) -> list[str]:
+            self.archived_ids.update(internal_ids)
+            return list(internal_ids)
+
+        def synchronize_account(self, account: str, timeout: int = 8) -> None:
+            return None
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    store.record_sender_preference("alerts@bank.example", "MyBank", "auto_archive", keep_subscribed=True)
+    app, token = create_app(cfg, store, AutoWebBridge(), token="auto-run-tok")
+    headers = {"X-Triage-Key": token}
+
+    with TestClient(app) as client:
+        before_activity = app.state.runtime.last_activity_at
+        bg_res = client.post("/api/auto/run?background=1", headers=headers)
+        assert bg_res.status_code == 200
+        # Background timer auto-run must NOT extend the server idle-shutdown window
+        assert app.state.runtime.last_activity_at == before_activity
+
+        run_res = client.post("/api/auto/run", headers=headers)
+        assert run_res.status_code == 200
+        run_data = run_res.json()
+        assert run_data["status"] == "ok"
+        assert run_data["summary"] == {"archived": 0, "declined": 0, "failed": 0}
+        assert bg_res.json()["summary"] == {"archived": 1, "declined": 0, "failed": 0}
+        assert run_data["unseen_count"] == 1
+
+        digest = client.get("/api/auto/digest", headers=headers).json()
+        assert digest["unseen_count"] == 1
+        assert [it["subject"] for it in digest["items"]] == ["Card notice"]
+
+        auto_logs = client.get("/api/audit-log?source=auto", headers=headers).json()
+        assert len(auto_logs["items"]) == 1
+        assert auto_logs["items"][0]["source"] == "auto"
+
+        ack = client.post("/api/auto/ack", headers=headers, json={"max_log_id": digest["max_log_id"]})
+        assert ack.status_code == 200
+        assert ack.json()["unseen_count"] == 0
+
+        digest_after = client.get("/api/auto/digest", headers=headers).json()
+        assert digest_after["unseen_count"] == 0
+        assert digest_after["items"] == []
+
+        marker = _json.loads((cfg.data_dir / "auto_status.json").read_text(encoding="utf-8"))
+        assert marker["unseen_count"] == 0
+
+
+def test_api_auto_run_skips_immediately_when_scan_lock_held(tmp_path: Path, monkeypatch):
+    import asyncio as _asyncio
+
+    _setup_test_env(tmp_path, monkeypatch)
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, FakeBridge(), token="lock-skip-tok")
+    headers = {"X-Triage-Key": token}
+
+    async def _run():
+        async with app.state.runtime.scan_lock:
+            from httpx import ASGITransport, AsyncClient
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await _asyncio.wait_for(
+                    client.post("/api/auto/run?background=1", headers=headers),
+                    timeout=2.0,
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "skipped"
+                assert data["reason"] == "busy"
+
+    _asyncio.run(_run())
+    store.close()
+
+
+def test_auto_digest_banner_and_one_click_rule_in_chromium(tmp_path: Path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+    import uvicorn
+    from playwright.async_api import async_playwright
+
+    _setup_test_env(tmp_path, monkeypatch)
+
+    class UiAutoBridge(FakeBridge):
+        def check_for_new_mail(self) -> bool:
+            return False
+
+        def scan_mailbox_metadata(self, account: str, mailbox: str = "INBOX", limit: int = 500, include_attachments: bool = True, days_back: int = 0):
+            if account == "iCloud":
+                return [
+                    MailHeader("iCloud", "INBOX", "10", "m10", "Card notice", "MyBank <alerts@bank.example>", "alerts@bank.example", "bank.example", "2026-11-23T09:00:00", False, False, 0),
+                ]
+            return []
+
+        def get_raw_source(self, account: str, mailbox: str, internal_id: str) -> bytes:
+            msg = EmailMessage()
+            msg["Subject"] = "Card notice"
+            msg["From"] = "MyBank <alerts@bank.example>"
+            msg.set_content("Transaction notice")
+            return msg.as_bytes()
+
+        def restore_to_inbox(self, account: str, from_mailbox: str, internal_id: str, *, inbox_mailbox: str = "INBOX", rfc_message_id: str = "") -> list[str]:
+            return [internal_id]
+
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    store.log_action(
+        run_id="auto-20261123",
+        account="iCloud",
+        internal_id="99",
+        sender="MyBank <alerts@bank.example>",
+        subject="Archived bank alert",
+        action="archive",
+        status="ok",
+        detail="Auto-Archive",
+        archive_mailbox="Archive",
+        rfc_message_id="rfc-99",
+        source="auto",
+    )
+    store.record_auto_run_status(
+        status="ok",
+        summary={"archived": 1, "declined": 0, "failed": 0},
+        status_file=cfg.data_dir / "auto_status.json",
+    )
+    app, token = create_app(cfg, store, UiAutoBridge(), token="ui-auto-tok")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    async def _run():
+        try:
+            deadline = time.monotonic() + 10.0
+            while not server.started and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert server.started
+
+            page_errors: list[str] = []
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(locale="en-US")
+                page = await context.new_page()
+                page.on("pageerror", lambda err: page_errors.append(str(err)))
+
+                await page.goto(f"http://127.0.0.1:{port}/?key={token}", wait_until="domcontentloaded")
+                await page.locator("#auto-digest-banner:not(.hidden)").wait_for(timeout=8000)
+                banner_text = await page.locator("#auto-digest-banner").inner_text()
+                assert "Archived bank alert" in banner_text
+
+                # Reload persists banner until explicitly dismissed
+                await page.reload(wait_until="domcontentloaded")
+                await page.locator("#auto-digest-banner:not(.hidden)").wait_for(timeout=8000)
+
+                # One-click Auto (Archive & Summarize) preference on row
+                await page.locator("select.pref-select").first.select_option("auto_archive")
+                await page.locator("span.pill:has-text('Auto-Archive')").first.wait_for(timeout=5000)
+
+                # Explicit dismiss ack clears banner
+                await page.locator("#btn-auto-digest-ack").click()
+                await page.locator("#auto-digest-banner.hidden").wait_for(state="attached", timeout=5000)
+                assert store.get_auto_digest()["unseen_count"] == 0
+
+                # Settings modal exposes automation interval & autopilot toggles
+                await page.locator("#settings-btn").click()
+                await page.locator("#cfg-auto-interval").wait_for(timeout=5000)
+                await page.locator("#cfg-auto-interval").fill("30")
+                await page.locator("#cfg-auto-consult").check()
+                await page.locator("#btn-save-settings").click()
+                await page.locator("#snapshot-modal.hidden").wait_for(state="attached", timeout=5000)
+                reloaded_cfg = load_config(ensure_files=False)
+                assert reloaded_cfg.auto_interval_minutes == 30
+                assert reloaded_cfg.auto_decline_consulting is True
+
+                assert page_errors == []
+                await browser.close()
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            store.close()
+
+    asyncio.run(_run())

@@ -83,3 +83,124 @@ def test_opened_tray_and_missed_dedup(tmp_path: Path):
     assert missed[0]["stage"] == "playwright"
     store.resolve_missed_unsubscribe(id1, "fixed")
     assert len(store.list_missed_unsubscribes()) == 0
+
+
+def test_sender_memory_filter_auto_archive(tmp_path: Path):
+    store = TriageStore(tmp_path / "state.db")
+    store.record_sender_preference("alerts@bank.example", "MyBank", "auto_archive", keep_subscribed=True)
+    store.record_sender_preference("news@coop.se", "Coop", "archive", keep_subscribed=True)
+
+    auto_rows = store.list_sender_memory(filter_kind="auto_archive")
+    assert [r["sender_key"] for r in auto_rows] == ["alerts@bank.example"]
+    learned_rows = store.list_sender_memory(filter_kind="learned")
+    assert {r["sender_key"] for r in learned_rows} == {"alerts@bank.example", "news@coop.se"}
+
+
+def test_auto_digest_ack_and_status_file(tmp_path: Path):
+    import json
+
+    store = TriageStore(tmp_path / "state.db")
+    status_file = tmp_path / "auto_status.json"
+
+    manual_id = store.log_action(
+        run_id="manual-1",
+        account="iCloud",
+        internal_id="1",
+        sender="Manual <m@example.com>",
+        subject="Manual item",
+        action="archive",
+        status="ok",
+        source="manual",
+    )
+    auto1 = store.log_action(
+        run_id="auto-1",
+        account="iCloud",
+        internal_id="2",
+        sender="MyBank <alerts@bank.example>",
+        subject="Card transaction",
+        action="archive",
+        status="ok",
+        detail="Auto-Archive",
+        archive_mailbox="Archive",
+        source="auto",
+    )
+    auto2 = store.log_action(
+        run_id="auto-1",
+        account="iCloud",
+        internal_id="3",
+        sender="ExpertNet <invite@expertnet.example>",
+        subject="Consulting offer",
+        action="decline_and_archive",
+        status="ok",
+        detail="Declined via link",
+        archive_mailbox="Archive",
+        source="auto",
+    )
+    assert manual_id < auto1 < auto2
+
+    store.record_auto_run_status(
+        status="ok",
+        summary={"archived": 1, "declined": 1, "failed": 0},
+        warnings=["Skipped Gmail under ui_menu"],
+        status_file=status_file,
+    )
+    digest = store.get_auto_digest()
+    assert digest["unseen_count"] == 2
+    assert digest["max_log_id"] == auto2
+    assert digest["summary"] == {"archived": 1, "declined": 1, "failed": 0}
+    assert digest["last_warnings"] == ["Skipped Gmail under ui_menu"]
+    assert [it["id"] for it in digest["items"]] == [auto2, auto1]
+
+    marker = json.loads(status_file.read_text(encoding="utf-8"))
+    assert marker["unseen_count"] == 2
+    assert marker["last_status"] == "ok"
+
+    auto_logs = store.list_action_log(source="auto")
+    assert {it["id"] for it in auto_logs["items"]} == {auto1, auto2}
+
+    acked = store.ack_auto_digest(status_file=status_file)
+    assert acked["unseen_count"] == 0
+    assert acked["ack_log_id"] == auto2
+    assert acked["last_warnings"] == []
+    digest_after_ack = store.get_auto_digest()
+    assert digest_after_ack["items"] == []
+    assert digest_after_ack["last_warnings"] == []
+
+    marker_after = json.loads(status_file.read_text(encoding="utf-8"))
+    assert marker_after["unseen_count"] == 0
+    assert marker_after["ack_log_id"] == auto2
+    assert marker_after["last_warnings"] == []
+
+
+def test_has_auto_failure_suppresses_repeats(tmp_path: Path):
+    store = TriageStore(tmp_path / "state.db")
+    assert store.has_auto_failure("iCloud", "99", "rfc-99", "decline_and_archive") is False
+
+    # Manual failure does not suppress auto
+    store.log_action(
+        run_id="manual-1",
+        account="iCloud",
+        internal_id="99",
+        sender="E <e@example.com>",
+        subject="Consult",
+        action="decline_and_archive",
+        status="failed",
+        rfc_message_id="rfc-99",
+        source="manual",
+    )
+    assert store.has_auto_failure("iCloud", "99", "rfc-99", "decline_and_archive") is False
+
+    # Auto failure suppresses same message/action
+    store.log_action(
+        run_id="auto-1",
+        account="iCloud",
+        internal_id="99",
+        sender="E <e@example.com>",
+        subject="Consult",
+        action="decline_and_archive",
+        status="blocked_captcha",
+        rfc_message_id="rfc-99",
+        source="auto",
+    )
+    assert store.has_auto_failure("iCloud", "99", "rfc-99", "decline_and_archive") is True
+    assert store.has_auto_failure("iCloud", "99", "rfc-99", "archive") is False

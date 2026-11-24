@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from nollpost.auto_runner import _is_mail_running, async_acquire_run_lock, async_run_auto_triage
 from nollpost.config import VALID_GMAIL_ARCHIVE_STRATEGIES, TriageConfig, update_config_file
 from nollpost.executor import BatchExecutor
 from nollpost.mail_bridge import AppleMailBridge, parse_sender_parts, validate_archive_destination
@@ -185,6 +186,11 @@ class SettingsUpdateRequest(BaseModel):
     browser: Optional[dict[str, Any]] = None
     consulting: Optional[dict[str, Any]] = None
     profile: Optional[dict[str, Any]] = None
+    automation: Optional[dict[str, Any]] = None
+
+
+class AutoAckRequest(BaseModel):
+    max_log_id: Optional[int] = None
 
 
 class SenderMemoryBulkRequest(BaseModel):
@@ -243,6 +249,51 @@ class AppRuntime:
                 row["latest_pertinent_label"] = ""
         return rows
 
+    async def _scan_unlocked(
+        self,
+        *,
+        mode: str = "inbox",
+        bypass_cache: bool = False,
+        sync_mail: bool = True,
+    ) -> ScanSnapshot:
+        self.scan_progress = {
+            "active": True,
+            "mode": mode,
+            "phase": "starting",
+            "message": f"Starting {mode} scan…",
+            "done": 0,
+            "total": 0,
+            "account": "",
+        }
+
+        def _on_progress(prog: dict[str, Any]) -> None:
+            self.scan_progress = dict(prog)
+
+        try:
+            snap = await asyncio.to_thread(
+                run_scan,
+                self.config,
+                self.store,
+                self.bridge,
+                mode=mode,
+                bypass_cache=bypass_cache,
+                on_progress=_on_progress,
+                sync_mail=sync_mail,
+            )
+        finally:
+            self.scan_progress = {
+                "active": False,
+                "mode": mode,
+                "phase": "idle",
+                "message": "",
+                "done": 0,
+                "total": 0,
+                "account": "",
+            }
+            self.touch_activity()
+        self.snapshots[mode] = snap
+        return snap
+
     async def get_snapshot(
         self,
         mode: str = "inbox",
@@ -254,42 +305,17 @@ class AppRuntime:
             raise HTTPException(status_code=400, detail="Invalid mode")
         async with self.scan_lock:
             if refresh or mode not in self.snapshots:
-                self.scan_progress = {
-                    "active": True,
-                    "mode": mode,
-                    "phase": "starting",
-                    "message": f"Starting {mode} scan…",
-                    "done": 0,
-                    "total": 0,
-                    "account": "",
-                }
-
-                def _on_progress(prog: dict[str, Any]) -> None:
-                    self.scan_progress = dict(prog)
-
-                try:
-                    snap = await asyncio.to_thread(
-                        run_scan,
-                        self.config,
-                        self.store,
-                        self.bridge,
+                async with async_acquire_run_lock(self.config.data_dir, wait_seconds=10.0) as got_lock:
+                    if not got_lock:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Another Nollpost scan/auto-triage run is currently busy",
+                        )
+                    snap = await self._scan_unlocked(
                         mode=mode,
                         bypass_cache=bypass_cache,
-                        on_progress=_on_progress,
                         sync_mail=sync_mail,
                     )
-                finally:
-                    self.scan_progress = {
-                        "active": False,
-                        "mode": mode,
-                        "phase": "idle",
-                        "message": "",
-                        "done": 0,
-                        "total": 0,
-                        "account": "",
-                    }
-                    self.touch_activity()
-                self.snapshots[mode] = snap
             else:
                 snap = self.snapshots[mode]
                 snap.missed = self.store.list_missed_unsubscribes(include_resolved=False)
@@ -425,7 +451,9 @@ def create_app(
         candidate = key_param or header_key or cookie_val
         if not hmac.compare_digest(candidate, auth_token):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        runtime.touch_activity()
+        is_bg_auto = request.url.path == "/api/auto/run" and request.query_params.get("background") == "1"
+        if not is_bg_auto:
+            runtime.touch_activity()
         response = await call_next(request)
         if key_param and hmac.compare_digest(key_param, auth_token) and not hmac.compare_digest(cookie_val, auth_token):
             response.set_cookie("triage_key", auth_token, httponly=True, samesite="strict")
@@ -490,7 +518,7 @@ def create_app(
                 preferred_action=None,
                 keep_subscribed=False,
             )
-        elif req.preference in ("always_keep", "archive", "mark_read"):
+        elif req.preference in ("always_keep", "auto_archive", "archive", "mark_read"):
             runtime.store.record_sender_preference(
                 sender_email=req.sender_email,
                 sender_domain=req.sender_domain,
@@ -562,6 +590,18 @@ def create_app(
                 "transactional_domains": list(cfg.transactional_domains),
                 "bill_keywords": list(cfg.bill_keywords),
             },
+            "automation": {
+                "enabled": cfg.auto_enabled,
+                "interval_minutes": cfg.auto_interval_minutes,
+                "auto_archive_sender_rules": cfg.auto_archive_sender_rules,
+                "auto_decline_consulting": cfg.auto_decline_consulting,
+                "auto_archive_transactional": cfg.auto_archive_transactional,
+                "auto_archive_bot_noise": cfg.auto_archive_bot_noise,
+                "auto_archive_always_archive": cfg.auto_archive_always_archive,
+                "auto_archive_recent_unsubs": cfg.auto_archive_recent_unsubs,
+                "skip_security_alerts": cfg.auto_skip_security_alerts,
+                "skip_pdf_invoices": cfg.auto_skip_pdf_invoices,
+            },
         }
 
     @app.get("/api/settings")
@@ -595,7 +635,7 @@ def create_app(
 
     @app.post("/api/sender-memory/bulk")
     async def api_bulk_sender_memory(req: SenderMemoryBulkRequest) -> dict[str, Any]:
-        if req.action not in ("always_keep", "archive", "mark_read", "clear", "delete"):
+        if req.action not in ("always_keep", "auto_archive", "archive", "mark_read", "clear", "delete"):
             raise HTTPException(status_code=400, detail="Invalid sender memory action")
         keys = [runtime.store.normalize_sender_key(k) for k in req.sender_keys if str(k).strip()]
         if not keys:
@@ -673,24 +713,30 @@ def create_app(
 
         async def runner() -> None:
             try:
-                try:
-                    results = await runtime.executor.execute_batch(
-                        pairs,
-                        acct_addrs,
-                        headless=req.headless,
-                        on_progress=on_prog,
-                    )
-                    runtime.jobs[job_id]["results"] = [r.to_dict() for r in results]
-                except Exception as exc:
-                    runtime.jobs[job_id]["status"] = "error"
-                    runtime.jobs[job_id]["message"] = str(exc)
-                    return
+                async with runtime.scan_lock:
+                    async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=10.0) as got_lock:
+                        if not got_lock:
+                            runtime.jobs[job_id]["status"] = "error"
+                            runtime.jobs[job_id]["message"] = "Another Nollpost scan/auto-triage run is currently busy"
+                            return
+                        try:
+                            results = await runtime.executor.execute_batch(
+                                pairs,
+                                acct_addrs,
+                                headless=req.headless,
+                                on_progress=on_prog,
+                            )
+                            runtime.jobs[job_id]["results"] = [r.to_dict() for r in results]
+                        except Exception as exc:
+                            runtime.jobs[job_id]["status"] = "error"
+                            runtime.jobs[job_id]["message"] = str(exc)
+                            return
 
-                try:
-                    runtime.jobs[job_id]["message"] = "Step 3/3 · Refreshing Apple Mail inbox view..."
-                    await runtime.get_snapshot(mode=req.mode, refresh=True, bypass_cache=False, sync_mail=False)
-                except Exception as scan_exc:
-                    runtime.jobs[job_id]["scan_warning"] = f"Actions completed, but inbox refresh failed: {scan_exc}"
+                        try:
+                            runtime.jobs[job_id]["message"] = "Step 3/3 · Refreshing Apple Mail inbox view..."
+                            await runtime._scan_unlocked(mode=req.mode, bypass_cache=False, sync_mail=False)
+                        except Exception as scan_exc:
+                            runtime.jobs[job_id]["scan_warning"] = f"Actions completed, but inbox refresh failed: {scan_exc}"
                 runtime.jobs[job_id]["done"] = runtime.jobs[job_id]["total"]
                 runtime.jobs[job_id]["message"] = "Completed"
                 runtime.jobs[job_id]["status"] = "completed"
@@ -748,8 +794,12 @@ def create_app(
     async def api_tray_sweep(req: TrayActionRequest) -> dict[str, Any]:
         snap = await runtime.get_snapshot(mode="inbox", refresh=False)
         archive_map = {a.name: a.archive_mailbox for a in snap.accounts}
-        res = await asyncio.to_thread(runtime.executor.sweep_opened_tray, req.uids, archive_map)
-        await runtime.get_snapshot(mode="inbox", refresh=True, sync_mail=False)
+        async with runtime.scan_lock:
+            async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=10.0) as got_lock:
+                if not got_lock:
+                    raise HTTPException(status_code=409, detail="Another Nollpost auto-triage run is currently busy")
+                res = await asyncio.to_thread(runtime.executor.sweep_opened_tray, req.uids, archive_map)
+                await runtime._scan_unlocked(mode="inbox", sync_mail=False)
         return {**res, "stats": runtime.store.get_stats(), "tray": runtime._enrich_tray()}
 
     @app.post("/api/tray/dismiss")
@@ -779,8 +829,9 @@ def create_app(
         )
         return {"ok": True, "id": row_id, "missed": runtime.store.list_missed_unsubscribes(False)}
 
-    async def _mark_succeeded_and_optional_archive(
+    async def _mark_succeeded_unlocked(
         *,
+        snap: ScanSnapshot,
         missed_id: Optional[int] = None,
         uid: str = "",
         account: str = "",
@@ -791,7 +842,6 @@ def create_app(
         archive: bool = True,
         note: str = "Marked as unsubscribed by user",
     ) -> dict[str, Any]:
-        snap = await runtime.get_snapshot(mode="inbox", refresh=False)
         entry = runtime.store.get_missed_unsubscribe(missed_id) if missed_id else None
         if entry:
             account = account or entry.get("account", "")
@@ -921,89 +971,146 @@ def create_app(
         status: str = "all",
         run_id: str = "",
         search: str = "",
+        source: str = "all",
         limit: int = 200,
     ) -> dict[str, Any]:
         return runtime.store.list_action_log(
             status=status,
             run_id=run_id,
             search=search,
+            source=source,
             limit=limit,
         )
+
+    @app.get("/api/auto/digest")
+    async def api_auto_digest(limit: int = 100) -> dict[str, Any]:
+        return runtime.store.get_auto_digest(limit=limit)
+
+    @app.post("/api/auto/ack")
+    async def api_auto_ack(req: Optional[AutoAckRequest] = None) -> dict[str, Any]:
+        max_id = req.max_log_id if req is not None else None
+        status_file = runtime.config.data_dir / "auto_status.json"
+        return await asyncio.to_thread(
+            runtime.store.ack_auto_digest,
+            max_log_id=max_id,
+            status_file=status_file,
+        )
+
+    @app.post("/api/auto/run")
+    async def api_auto_run(dry_run: bool = False, force: bool = False) -> dict[str, Any]:
+        if runtime.scan_lock.locked():
+            return {
+                "status": "skipped",
+                "reason": "busy",
+                "unseen_count": runtime.store.get_auto_digest()["unseen_count"],
+            }
+        mail_checker = _is_mail_running if type(runtime.bridge) is AppleMailBridge else (lambda: True)
+        async with runtime.scan_lock:
+            async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=0.0) as got_lock:
+                if not got_lock:
+                    return {
+                        "status": "skipped",
+                        "reason": "busy",
+                        "unseen_count": runtime.store.get_auto_digest()["unseen_count"],
+                    }
+                report = await async_run_auto_triage(
+                    runtime.config,
+                    runtime.store,
+                    runtime.bridge,
+                    dry_run=dry_run,
+                    force=force,
+                    headless=True,
+                    allow_private_urls=allow_private_urls,
+                    mail_running_checker=mail_checker,
+                    acquire_lock=False,
+                )
+            if report.get("executed", 0):
+                runtime.snapshots.clear()
+        return report
 
     @app.post("/api/audit-log/{entry_id}/undo")
     async def api_undo_archive(entry_id: int) -> dict[str, Any]:
         async with runtime.scan_lock:
-            entry = runtime.store.get_action_log_entry(entry_id)
-            if not entry:
-                raise HTTPException(status_code=404, detail="Audit log entry not found")
-            if entry.get("undone_at"):
-                raise HTTPException(status_code=400, detail="Archive action was already undone")
-            if not entry.get("can_undo_archive"):
-                raise HTTPException(status_code=400, detail="Only completed archive actions can be undone")
+            async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=10.0) as got_lock:
+                if not got_lock:
+                    raise HTTPException(status_code=409, detail="Another Nollpost auto-triage run is currently busy")
+                entry = runtime.store.get_action_log_entry(entry_id)
+                if not entry:
+                    raise HTTPException(status_code=404, detail="Audit log entry not found")
+                if entry.get("undone_at"):
+                    raise HTTPException(status_code=400, detail="Archive action was already undone")
+                if not entry.get("can_undo_archive"):
+                    raise HTTPException(status_code=400, detail="Only completed archive actions can be undone")
 
-            account = str(entry.get("account") or "").strip()
-            if not account:
-                raise HTTPException(status_code=400, detail="Missing account for audit entry")
+                account = str(entry.get("account") or "").strip()
+                if not account:
+                    raise HTTPException(status_code=400, detail="Missing account for audit entry")
 
-            snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
-            accounts_list = snap.accounts if snap else []
-            if not accounts_list:
+                snap = runtime.snapshots.get("inbox") or runtime.snapshots.get("catchup")
+                accounts_list = snap.accounts if snap else []
+                if not accounts_list:
+                    try:
+                        accounts_list = await asyncio.to_thread(runtime.bridge.list_accounts)
+                    except Exception:
+                        accounts_list = []
+                acct_archive_map = {a.name: a.archive_mailbox for a in accounts_list}
+                acct_inbox_map = {a.name: a.inbox_mailbox for a in accounts_list}
+
+                from_mailbox = (
+                    str(entry.get("archive_mailbox") or "").strip()
+                    or acct_archive_map.get(account)
+                    or runtime.config.archive_map.get(account)
+                    or "Archive"
+                )
+                inbox_mailbox = acct_inbox_map.get(account, "INBOX")
+
                 try:
-                    accounts_list = await asyncio.to_thread(runtime.bridge.list_accounts)
-                except Exception:
-                    accounts_list = []
-            acct_archive_map = {a.name: a.archive_mailbox for a in accounts_list}
-            acct_inbox_map = {a.name: a.inbox_mailbox for a in accounts_list}
+                    restored = await asyncio.to_thread(
+                        runtime.bridge.restore_to_inbox,
+                        account,
+                        from_mailbox,
+                        str(entry.get("internal_id") or ""),
+                        inbox_mailbox=inbox_mailbox,
+                        rfc_message_id=str(entry.get("rfc_message_id") or ""),
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                except Exception as exc:
+                    raise HTTPException(status_code=500, detail=f"Mail restore failed: {exc}") from exc
 
-            from_mailbox = (
-                str(entry.get("archive_mailbox") or "").strip()
-                or acct_archive_map.get(account)
-                or runtime.config.archive_map.get(account)
-                or "Archive"
-            )
-            inbox_mailbox = acct_inbox_map.get(account, "INBOX")
+                if not restored:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Could not find message #{entry.get('internal_id')} in {account}/{from_mailbox}",
+                    )
 
-            try:
-                restored = await asyncio.to_thread(
-                    runtime.bridge.restore_to_inbox,
-                    account,
-                    from_mailbox,
-                    str(entry.get("internal_id") or ""),
-                    inbox_mailbox=inbox_mailbox,
-                    rfc_message_id=str(entry.get("rfc_message_id") or ""),
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except Exception as exc:
-                raise HTTPException(status_code=500, detail=f"Mail restore failed: {exc}") from exc
-
-            if not restored:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Could not find message #{entry.get('internal_id')} in {account}/{from_mailbox}",
-                )
-
-            runtime.store.mark_action_undone(entry_id, detail_note=f"Restored to {account}/{inbox_mailbox}")
-            runtime.snapshots.clear()
-            return {
-                "ok": True,
-                "entry_id": entry_id,
-                "restored_to": f"{account}/{inbox_mailbox}",
-            }
+                runtime.store.mark_action_undone(entry_id, detail_note=f"Restored to {account}/{inbox_mailbox}")
+                runtime.snapshots.clear()
+                return {
+                    "ok": True,
+                    "entry_id": entry_id,
+                    "restored_to": f"{account}/{inbox_mailbox}",
+                }
 
     @app.post("/api/unsub/mark-succeeded")
     async def api_unsub_mark_succeeded(req: MarkUnsubscribedRequest) -> dict[str, Any]:
-        return await _mark_succeeded_and_optional_archive(
-            missed_id=req.missed_id,
-            uid=req.uid,
-            account=req.account,
-            mailbox=req.mailbox,
-            internal_id=req.internal_id,
-            sender=req.sender,
-            subject=req.subject,
-            archive=req.archive,
-            note=req.note or "Marked as unsubscribed by user",
-        )
+        snap = await runtime.get_snapshot(mode="inbox", refresh=False)
+        async with runtime.scan_lock:
+            async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=10.0) as got_lock:
+                if not got_lock:
+                    raise HTTPException(status_code=409, detail="Another Nollpost auto-triage run is currently busy")
+                return await _mark_succeeded_unlocked(
+                    snap=snap,
+                    missed_id=req.missed_id,
+                    uid=req.uid,
+                    account=req.account,
+                    mailbox=req.mailbox,
+                    internal_id=req.internal_id,
+                    sender=req.sender,
+                    subject=req.subject,
+                    archive=req.archive,
+                    note=req.note or "Marked as unsubscribed by user",
+                )
 
     @app.post("/api/missed/{missed_id}/resolve")
     async def api_missed_resolve(missed_id: int, req: MissedActionRequest) -> dict[str, Any]:
@@ -1037,33 +1144,39 @@ def create_app(
         if not valid_urls:
             raise HTTPException(status_code=400, detail="No valid public URL available to retry")
 
-        outcome = None
-        unsub_patterns = load_unsub_patterns(runtime.config.patterns_path)
-        for target_url in valid_urls[:2]:
-            outcome = await run_playwright_action(
-                target_url,
-                mode="unsubscribe",
-                screenshots_dir=runtime.config.screenshots_dir,
-                headless=req.headless,
-                allow_private=allow_private_urls,
-                browser_locale=runtime.config.browser_locale,
-                accept_language=runtime.config.accept_language,
-                patterns=unsub_patterns,
-            )
-            if outcome.status == "success":
-                break
-        assert outcome is not None
-        if outcome.status == "success":
-            await _mark_succeeded_and_optional_archive(
-                missed_id=missed_id,
-                account=entry.get("account", ""),
-                mailbox=entry.get("mailbox", "INBOX"),
-                internal_id=str(entry.get("internal_id", "")),
-                sender=entry.get("sender", ""),
-                subject=entry.get("subject", ""),
-                archive=req.archive,
-                note=f"Retry succeeded: {outcome.detail}",
-            )
+        snap = await runtime.get_snapshot(mode="inbox", refresh=False)
+        async with runtime.scan_lock:
+            async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=10.0) as got_lock:
+                if not got_lock:
+                    raise HTTPException(status_code=409, detail="Another Nollpost auto-triage run is currently busy")
+                outcome = None
+                unsub_patterns = load_unsub_patterns(runtime.config.patterns_path)
+                for target_url in valid_urls[:2]:
+                    outcome = await run_playwright_action(
+                        target_url,
+                        mode="unsubscribe",
+                        screenshots_dir=runtime.config.screenshots_dir,
+                        headless=req.headless,
+                        allow_private=allow_private_urls,
+                        browser_locale=runtime.config.browser_locale,
+                        accept_language=runtime.config.accept_language,
+                        patterns=unsub_patterns,
+                    )
+                    if outcome.status == "success":
+                        break
+                assert outcome is not None
+                if outcome.status == "success":
+                    await _mark_succeeded_unlocked(
+                        snap=snap,
+                        missed_id=missed_id,
+                        account=entry.get("account", ""),
+                        mailbox=entry.get("mailbox", "INBOX"),
+                        internal_id=str(entry.get("internal_id", "")),
+                        sender=entry.get("sender", ""),
+                        subject=entry.get("subject", ""),
+                        archive=req.archive,
+                        note=f"Retry succeeded: {outcome.detail}",
+                    )
         return {
             "outcome": outcome.to_dict(),
             "stats": runtime.store.get_stats(),
