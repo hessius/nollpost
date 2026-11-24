@@ -964,7 +964,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private nonisolated static let upgradeCommand = "brew upgrade hessius/tap/nollpost"
 
     private func installedBundleVersion() -> String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.3.0"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.4.0"
     }
 
     private func resolvedConfigPath() -> String {

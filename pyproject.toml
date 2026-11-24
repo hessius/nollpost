@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nollpost"
-version = "0.3.0"
+version = "0.4.0"
 description = "Zero-token multi-inbox Apple Mail triage board, safe Archive-only manager, and Playwright unsubscribe runner"
 readme = "README.md"
 license = "MIT"
