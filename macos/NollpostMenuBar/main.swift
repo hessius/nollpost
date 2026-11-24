@@ -1196,6 +1196,14 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func runAutoTriage(interactive: Bool) async {
         guard !isAutoRunInFlight else { return }
+        isAutoRunInFlight = true
+        updateAutoTriageMenuState()
+        defer {
+            isAutoRunInFlight = false
+            reloadAutoStatus()
+            rescheduleAutoTimerIfNeeded()
+        }
+
         if !interactive {
             guard isAutoTriageEnabledInConfig() && !isAutoTriagePaused() else { return }
             let mailRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.mail").isEmpty
@@ -1204,14 +1212,6 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard case .granted = autoPerm else { return }
         } else {
             guard await promptIfAutomationMissingBeforeLaunch() else { return }
-        }
-
-        isAutoRunInFlight = true
-        updateAutoTriageMenuState()
-        defer {
-            isAutoRunInFlight = false
-            reloadAutoStatus()
-            rescheduleAutoTimerIfNeeded()
         }
 
         switch serverState {
@@ -1226,12 +1226,23 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func handleInteractiveAutoReport(_ data: Data) {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+    private func handleInteractiveAutoReport(_ data: Data, fallbackError: String? = nil) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let detail = fallbackError?.trimmingCharacters(in: .whitespacesAndNewlines)
+            showAlert(
+                style: .warning,
+                title: "Auto-Triage Failed",
+                message: (detail?.isEmpty == false ? detail! : nil) ?? "Could not parse auto-triage output. Check menubar.log for details."
+            )
+            return
+        }
         let status = (obj["status"] as? String ?? "").lowercased()
+        let warnings = (obj["warnings"] as? [String] ?? []).filter { !$0.isEmpty }
+        let warningSuffix = warnings.isEmpty ? "" : "\n\nWarnings:\n• " + warnings.joined(separator: "\n• ")
+
         if status == "error" {
             let errText = obj["error"] as? String ?? "Unknown error during auto-triage."
-            showAlert(style: .warning, title: "Auto-Triage Failed", message: errText)
+            showAlert(style: .warning, title: "Auto-Triage Failed", message: errText + warningSuffix)
         } else if status == "skipped" {
             let reason = obj["reason"] as? String ?? "skipped"
             let msg: String
@@ -1245,7 +1256,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default:
                 msg = "Auto-triage was skipped (\(reason))."
             }
-            showAlert(style: .informational, title: "Auto-Triage Skipped", message: msg)
+            showAlert(style: .informational, title: "Auto-Triage Skipped", message: msg + warningSuffix)
         } else if status == "ok" {
             let executed = obj["executed"] as? Int ?? 0
             let summary = obj["summary"] as? [String: Any] ?? [:]
@@ -1257,7 +1268,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.alertStyle = .informational
             if executed > 0 {
                 alert.messageText = "Auto-Triage Complete"
-                alert.informativeText = "Archived \(archived), declined \(declined), failed \(failed).\n\nOpen the Review Board to review the summary or undo any action."
+                alert.informativeText = "Archived \(archived), declined \(declined), failed \(failed).\n\nOpen the Review Board to review the summary or undo any action." + warningSuffix
             } else {
                 let rules = obj["active_rules"] as? [String: Any] ?? [:]
                 let senderCount = rules["sender_auto_archive"] as? Int ?? 0
@@ -1268,10 +1279,10 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     || (rules["auto_archive_recent_unsubs"] as? Bool ?? false)
                 if senderCount == 0 && !hasAnyToggle {
                     alert.messageText = "Auto-Triage: No Active Rules"
-                    alert.informativeText = "0 emails matched because all category autopilot toggles (such as Auto-decline Consulting Mismatches) are currently off and no senders are marked Auto (Archive & Summarize) yet.\n\nOpen the Review Board to enable them in Settings or on any email row."
+                    alert.informativeText = "0 emails matched because all category autopilot toggles (such as Auto-decline Consulting Mismatches) are currently off and no senders are marked Auto (Archive & Summarize) yet.\n\nOpen the Review Board to enable them in Settings or on any email row." + warningSuffix
                 } else {
                     alert.messageText = "Auto-Triage Complete"
-                    alert.informativeText = "0 unread Inbox emails matched your active auto-triage rules."
+                    alert.informativeText = "0 unread Inbox emails matched your active auto-triage rules." + warningSuffix
                 }
             }
             alert.addButton(withTitle: "Open Review Board")
@@ -1280,6 +1291,13 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if alert.runModal() == .alertFirstButtonReturn {
                 openReviewBoard(nil)
             }
+        } else {
+            let detail = fallbackError?.trimmingCharacters(in: .whitespacesAndNewlines)
+            showAlert(
+                style: .warning,
+                title: "Auto-Triage Failed",
+                message: (detail?.isEmpty == false ? detail! : nil) ?? "Unexpected auto-triage status '\(status)'."
+            )
         }
     }
 
@@ -1306,7 +1324,7 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if !(200..<300).contains(code) {
                     showAlert(style: .warning, title: "Auto-Triage Failed", message: "Server returned HTTP \(code).")
                 } else {
-                    handleInteractiveAutoReport(data)
+                    handleInteractiveAutoReport(data, fallbackError: bodyStr)
                 }
             }
         } catch {
@@ -1324,33 +1342,60 @@ final class NollpostMenuApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let env = childEnvironment(for: exe)
         let cliArgs = interactive ? ["auto", "--force", "--json"] : ["auto", "--json"]
-        let result: (Int32, Data) = await withCheckedContinuation { continuation in
+        let result: (Int32, Data, Data) = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = exe
                 proc.arguments = cliArgs
                 proc.environment = env
                 let outPipe = Pipe()
+                let errPipe = Pipe()
                 proc.standardOutput = outPipe
-                proc.standardError = outPipe
+                proc.standardError = errPipe
                 do {
                     try proc.run()
-                    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    var outData = Data()
+                    var errData = Data()
+                    let group = DispatchGroup()
+                    group.enter()
+                    DispatchQueue.global(qos: .utility).async {
+                        outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                        group.leave()
+                    }
+                    group.enter()
+                    DispatchQueue.global(qos: .utility).async {
+                        errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                        group.leave()
+                    }
+                    group.wait()
                     proc.waitUntilExit()
-                    continuation.resume(returning: (proc.terminationStatus, data))
+                    continuation.resume(returning: (proc.terminationStatus, outData, errData))
                 } catch {
                     let msg = Data(error.localizedDescription.utf8)
-                    continuation.resume(returning: (-1, msg))
+                    continuation.resume(returning: (-1, Data(), msg))
                 }
             }
         }
         let outputText = String(decoding: result.1, as: UTF8.self)
-        appendLog("\n--- nollpost \(cliArgs.joined(separator: " ")) (exit \(result.0)): \(outputText) ---\n")
+        let stderrText = String(decoding: result.2, as: UTF8.self)
+        let errSuffix = stderrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "\n[stderr] \(stderrText)"
+        appendLog("\n--- nollpost \(cliArgs.joined(separator: " ")) (exit \(result.0)): \(outputText)\(errSuffix) ---\n")
         if interactive {
-            if result.0 != 0 {
-                showAlert(style: .warning, title: "Auto-Triage Failed", message: outputText)
+            let combinedFallback = [stderrText, outputText]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            if !result.1.isEmpty,
+               (try? JSONSerialization.jsonObject(with: result.1) as? [String: Any]) != nil {
+                handleInteractiveAutoReport(result.1, fallbackError: combinedFallback)
+            } else if result.0 != 0 {
+                showAlert(
+                    style: .warning,
+                    title: "Auto-Triage Failed",
+                    message: combinedFallback.isEmpty ? "Process exited with status \(result.0)." : combinedFallback
+                )
             } else {
-                handleInteractiveAutoReport(result.1)
+                handleInteractiveAutoReport(result.1, fallbackError: combinedFallback)
             }
         }
     }

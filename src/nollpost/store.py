@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sqlite3
@@ -793,38 +794,60 @@ class TriageStore:
             "items": items,
         }
 
+    @contextmanager
+    def _status_file_lock(self, status_file: Optional[Path]) -> Iterator[None]:
+        if status_file is None:
+            yield
+            return
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = status_file.parent / f".{status_file.name}.lock"
+        fh = lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fh.close()
+
     def write_auto_status_file(self, status_file: Optional[Path]) -> None:
         if status_file is None:
             return
         with self._lock:
-            with self._conn() as conn:
-                digest = self._build_auto_status_payload(conn)
-            marker = {
-                "unseen_count": digest["unseen_count"],
-                "ack_log_id": digest["ack_log_id"],
-                "max_log_id": digest["max_log_id"],
-                "last_run_at": digest["last_run_at"],
-                "last_status": digest["last_status"],
-                "last_error": digest["last_error"],
-                "last_warnings": digest["last_warnings"],
-                "last_summary": digest["last_summary"],
-            }
-            status_file.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(status_file.parent),
-                prefix=".auto_status.",
-                suffix=".tmp",
-            )
+            with self._status_file_lock(status_file):
+                self._write_auto_status_file_locked(status_file)
+
+    def _write_auto_status_file_locked(self, status_file: Path) -> None:
+        with self._conn() as conn:
+            digest = self._build_auto_status_payload(conn)
+        marker = {
+            "unseen_count": digest["unseen_count"],
+            "ack_log_id": digest["ack_log_id"],
+            "max_log_id": digest["max_log_id"],
+            "last_run_at": digest["last_run_at"],
+            "last_status": digest["last_status"],
+            "last_error": digest["last_error"],
+            "last_warnings": digest["last_warnings"],
+            "last_summary": digest["last_summary"],
+        }
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(status_file.parent),
+            prefix=".auto_status.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(marker, ensure_ascii=False, indent=2))
+            os.replace(tmp_name, status_file)
+        except Exception:
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(json.dumps(marker, ensure_ascii=False, indent=2))
-                os.replace(tmp_name, status_file)
-            except Exception:
-                try:
-                    os.unlink(tmp_name)
-                except OSError:
-                    pass
-                raise
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def record_auto_run_status(
         self,
@@ -837,23 +860,25 @@ class TriageStore:
     ) -> dict[str, Any]:
         now = utc_now_iso()
         with self._lock:
-            with self._conn() as conn:
-                pairs = (
-                    ("auto_last_run_at", now),
-                    ("auto_last_status", status),
-                    ("auto_last_error", error),
-                    ("auto_last_warnings", json.dumps(list(warnings or []), ensure_ascii=False)),
-                    ("auto_last_summary", json.dumps(summary, ensure_ascii=False)),
-                )
-                for k, v in pairs:
-                    conn.execute(
-                        "INSERT INTO app_state (key, value) VALUES (?, ?) "
-                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        (k, v),
+            with self._status_file_lock(status_file):
+                with self._conn() as conn:
+                    pairs = (
+                        ("auto_last_run_at", now),
+                        ("auto_last_status", status),
+                        ("auto_last_error", error),
+                        ("auto_last_warnings", json.dumps(list(warnings or []), ensure_ascii=False)),
+                        ("auto_last_summary", json.dumps(summary, ensure_ascii=False)),
                     )
-                digest = self._build_auto_status_payload(conn)
-            self.write_auto_status_file(status_file)
-            return digest
+                    for k, v in pairs:
+                        conn.execute(
+                            "INSERT INTO app_state (key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (k, v),
+                        )
+                    digest = self._build_auto_status_payload(conn)
+                if status_file is not None:
+                    self._write_auto_status_file_locked(status_file)
+                return digest
 
     def get_auto_digest(self, limit: int = 100) -> dict[str, Any]:
         capped = max(1, min(500, int(limit)))
@@ -869,28 +894,30 @@ class TriageStore:
         status_file: Optional[Path] = None,
     ) -> dict[str, Any]:
         with self._lock:
-            with self._conn() as conn:
-                ack_raw = conn.execute("SELECT value FROM app_state WHERE key = 'auto_digest_ack_log_id'").fetchone()
-                cur_ack = int(ack_raw["value"]) if ack_raw and str(ack_raw["value"]).isdigit() else 0
-                latest_row = conn.execute(
-                    "SELECT COALESCE(MAX(id), 0) AS max_id FROM action_log WHERE source = 'auto'"
-                ).fetchone()
-                latest_auto_id = int(latest_row["max_id"]) if latest_row else 0
-                target = min(latest_auto_id, int(max_log_id)) if max_log_id is not None else latest_auto_id
-                new_ack = max(cur_ack, target)
-                for k, v in (
-                    ("auto_digest_ack_log_id", str(new_ack)),
-                    ("auto_digest_ack_at", utc_now_iso()),
-                    ("auto_last_warnings", "[]"),
-                ):
-                    conn.execute(
-                        "INSERT INTO app_state (key, value) VALUES (?, ?) "
-                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        (k, v),
-                    )
-                digest = self._build_auto_status_payload(conn)
-            self.write_auto_status_file(status_file)
-            return digest
+            with self._status_file_lock(status_file):
+                with self._conn() as conn:
+                    ack_raw = conn.execute("SELECT value FROM app_state WHERE key = 'auto_digest_ack_log_id'").fetchone()
+                    cur_ack = int(ack_raw["value"]) if ack_raw and str(ack_raw["value"]).isdigit() else 0
+                    latest_row = conn.execute(
+                        "SELECT COALESCE(MAX(id), 0) AS max_id FROM action_log WHERE source = 'auto'"
+                    ).fetchone()
+                    latest_auto_id = int(latest_row["max_id"]) if latest_row else 0
+                    target = min(latest_auto_id, int(max_log_id)) if max_log_id is not None else latest_auto_id
+                    new_ack = max(cur_ack, target)
+                    for k, v in (
+                        ("auto_digest_ack_log_id", str(new_ack)),
+                        ("auto_digest_ack_at", utc_now_iso()),
+                        ("auto_last_warnings", "[]"),
+                    ):
+                        conn.execute(
+                            "INSERT INTO app_state (key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (k, v),
+                        )
+                    digest = self._build_auto_status_payload(conn)
+                if status_file is not None:
+                    self._write_auto_status_file_locked(status_file)
+                return digest
 
     def get_action_log_entry(self, entry_id: int) -> Optional[dict[str, Any]]:
         with self._conn() as conn:

@@ -204,7 +204,7 @@
   "guide.item_catchup": "<strong>Archive Catch-Up:</strong> Scans your Archive folders for repeat promotional newsletters and offers <em>Unsub only</em> without modifying Inbox state.",
   "guide.item_missed": "<strong>Missed-Unsub Queue:</strong> Stores senders where automatic unsubscribe lacked a reliable link or failed in headless mode. Inspect snapshots, retry, or mark resolved once handled manually.",
   "guide.item_browser": "<strong>Show Browser:</strong> Leave unchecked for background headless Playwright runs; check it to watch browser interactions live.",
-  "guide.item_remember": "<strong>Remember... dropdown:</strong> Teach Nollpost per sender (<em>Always Keep</em>, <em>Always Archive</em>, or <em>Always Mark Read</em>).",
+  "guide.item_remember": "<strong>Remember... dropdown:</strong> Teach Nollpost per sender (<em>Always Keep</em>, <em>Auto (Archive &amp; Summarize)</em>, <em>Always Archive</em>, or <em>Always Mark Read</em>).",
   "settings.title": "Nollpost Settings",
   "settings.config_file": "Config file:",
   "settings.section_scan": "Scan & Archiving",

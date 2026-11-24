@@ -990,11 +990,20 @@ def create_app(
     async def api_auto_ack(req: Optional[AutoAckRequest] = None) -> dict[str, Any]:
         max_id = req.max_log_id if req is not None else None
         status_file = runtime.config.data_dir / "auto_status.json"
-        async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=2.0):
-            return runtime.store.ack_auto_digest(max_log_id=max_id, status_file=status_file)
+        return await asyncio.to_thread(
+            runtime.store.ack_auto_digest,
+            max_log_id=max_id,
+            status_file=status_file,
+        )
 
     @app.post("/api/auto/run")
     async def api_auto_run(dry_run: bool = False, force: bool = False) -> dict[str, Any]:
+        if runtime.scan_lock.locked():
+            return {
+                "status": "skipped",
+                "reason": "busy",
+                "unseen_count": runtime.store.get_auto_digest()["unseen_count"],
+            }
         mail_checker = _is_mail_running if type(runtime.bridge) is AppleMailBridge else (lambda: True)
         async with runtime.scan_lock:
             async with async_acquire_run_lock(runtime.config.data_dir, wait_seconds=0.0) as got_lock:

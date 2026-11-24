@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator, Callable, Iterator, Optional
 from nollpost.classifier import BASE_SECURITY_DOMAINS, SECURITY_KEYWORDS_RE, _domain_matches
 from nollpost.config import TriageConfig
 from nollpost.executor import BatchExecutor
-from nollpost.mail_bridge import AppleMailBridge, is_gmail_all_mail_destination
+from nollpost.mail_bridge import INBOX_CANDIDATES, AppleMailBridge, is_gmail_all_mail_destination
 from nollpost.models import ClassifiedItem
 from nollpost.scanner import run_scan
 from nollpost.store import TriageStore
@@ -102,10 +102,15 @@ def _is_gmail_item(item: ClassifiedItem) -> bool:
     return is_gmail_all_mail_destination(item.archive_mailbox) or "gmail" in item.header.account.lower()
 
 
+_INBOX_NAMES_LOWER = frozenset(name.strip().lower() for name in INBOX_CANDIDATES)
+
+
 def select_auto_actions(
     items: list[ClassifiedItem],
     config: TriageConfig,
     store: TriageStore,
+    *,
+    inbox_mailboxes: Optional[dict[str, str]] = None,
 ) -> tuple[list[tuple[ClassifiedItem, str]], list[str]]:
     """Select eligible unread INBOX items and concrete actions for autopilot."""
     selected: list[tuple[ClassifiedItem, str]] = []
@@ -114,7 +119,12 @@ def select_auto_actions(
 
     for item in items:
         h = item.header
-        if h.is_read or str(h.mailbox or "").strip().upper() != "INBOX":
+        box_low = str(h.mailbox or "").strip().lower()
+        acct_inbox = str((inbox_mailboxes or {}).get(h.account, "")).strip().lower()
+        in_inbox = (box_low == acct_inbox) if acct_inbox else (box_low in _INBOX_NAMES_LOWER)
+        if not in_inbox and box_low in _INBOX_NAMES_LOWER:
+            in_inbox = True
+        if h.is_read or not in_inbox:
             continue
         if config.auto_skip_security_alerts:
             if item.subcategory == "Security Alert":
@@ -229,7 +239,13 @@ async def _execute_auto_pass(
             mode="inbox",
             sync_mail=True,
         )
-        pairs, select_warnings = select_auto_actions(snap.items, config, store)
+        inbox_map = {a.name: a.inbox_mailbox for a in snap.accounts}
+        pairs, select_warnings = select_auto_actions(
+            snap.items,
+            config,
+            store,
+            inbox_mailboxes=inbox_map,
+        )
         warnings = [*snap.warnings, *select_warnings]
         active_rules = _describe_active_rules(config, store)
         if dry_run:

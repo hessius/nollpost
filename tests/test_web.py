@@ -953,6 +953,34 @@ def test_auto_run_digest_and_ack_endpoints(tmp_path: Path, monkeypatch):
         assert marker["unseen_count"] == 0
 
 
+def test_api_auto_run_skips_immediately_when_scan_lock_held(tmp_path: Path, monkeypatch):
+    import asyncio as _asyncio
+
+    _setup_test_env(tmp_path, monkeypatch)
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    app, token = create_app(cfg, store, FakeBridge(), token="lock-skip-tok")
+    headers = {"X-Triage-Key": token}
+
+    async def _run():
+        async with app.state.runtime.scan_lock:
+            from httpx import ASGITransport, AsyncClient
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                resp = await _asyncio.wait_for(
+                    client.post("/api/auto/run?background=1", headers=headers),
+                    timeout=2.0,
+                )
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["status"] == "skipped"
+                assert data["reason"] == "busy"
+
+    _asyncio.run(_run())
+    store.close()
+
+
 def test_auto_digest_banner_and_one_click_rule_in_chromium(tmp_path: Path, monkeypatch):
     import asyncio
     import socket

@@ -309,6 +309,36 @@ auto_archive_transactional = true
     assert any("ui_menu" in w for w in warnings)
 
 
+def test_select_auto_actions_accepts_localized_inbox_names(tmp_path: Path, monkeypatch):
+    _setup_cfg(
+        tmp_path,
+        monkeypatch,
+        """
+[automation]
+auto_archive_sender_rules = true
+""",
+    )
+    cfg = load_config()
+    store = TriageStore(cfg.db_path)
+    store.record_sender_preference("alerts@mybank.example", "MyBank", "auto_archive", keep_subscribed=True)
+
+    swedish_inbox_item = classify_email(
+        MailHeader("iCloud", "Inkorgen", "301", "s1", "Kontohändelse", "MyBank <alerts@mybank.example>", "alerts@mybank.example", "mybank.example", "2026-11-23T09:00:00", False, False, 0),
+        ExtractedEmailInfo(),
+        cfg,
+        "Arkiv",
+        sender_mem=store.get_sender_memory("alerts@mybank.example"),
+    )
+    selected, warnings = select_auto_actions(
+        [swedish_inbox_item],
+        cfg,
+        store,
+        inbox_mailboxes={"iCloud": "Inkorgen"},
+    )
+    assert warnings == []
+    assert [(it.header.internal_id, act) for it, act in selected] == [("301", "archive")]
+
+
 def test_run_auto_triage_dry_run_execute_and_lock(tmp_path: Path, monkeypatch):
     _setup_cfg(
         tmp_path,
